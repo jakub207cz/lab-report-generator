@@ -214,14 +214,75 @@ def fill_template_docx(template_path, topic, inputs_map, ai_content):
     doc.save(bio)
     return bio
 
-st.set_page_config(page_title="AI Lab Report Generator", layout="centered")
+st.set_page_config(page_title="AI Lab Report Generator", layout="wide", page_icon="⚡")
 
-st.title("⚡ Generátor Laboratorních Protokolů (SPŠE)")
+# Moderní stylování pro lepší vzhled a přívětivost pro studenty
+st.markdown("""
+<style>
+    /* Global styling */
+    .stApp {
+        background-color: #f4f7f6;
+    }
+    
+    /* Vylepšení nadpisů */
+    h1, h2, h3 {
+        color: #2c3e50;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    
+    .main-title {
+        text-align: center;
+        font-size: 3em;
+        font-weight: 800;
+        background: -webkit-linear-gradient(#4facfe, #00f2fe);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0.1em;
+    }
+    .sub-title {
+        text-align: center;
+        color: #7f8c8d;
+        font-size: 1.2em;
+        margin-bottom: 2em;
+    }
+    
+    /* Tlačítko pro generování - jako primary CTA */
+    .stButton>button {
+        background-color: #00f2fe;
+        color: #1a1a1a;
+        border-radius: 8px;
+        border: none;
+        padding: 12px 24px;
+        font-weight: bold;
+        font-size: 1.1em;
+        transition: all 0.3s ease;
+        width: 100%;
+        box-shadow: 0 4px 6px rgba(0, 242, 254, 0.2);
+    }
+    .stButton>button:hover {
+        background-color: #4facfe;
+        color: white;
+        transform: translateY(-2px);
+        box-shadow: 0 6px 8px rgba(0, 242, 254, 0.4);
+    }
+    
+    /* Zvýraznění bloků se soubory */
+    div[data-testid="stFileUploader"] {
+        background: white;
+        padding: 10px;
+        border-radius: 10px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    }
+</style>
+""", unsafe_allow_html=True)
 
-with st.expander("ℹ️ Nastavení & API", expanded=True):
+st.markdown("<h1 class='main-title'>⚡ AI Generátor Protokolů</h1>", unsafe_allow_html=True)
+st.markdown("<p class='sub-title'>Tvoje záchrana pro laborky na SPŠE. Rychle, moderně a bez stresu.</p>", unsafe_allow_html=True)
+
+with st.expander("🔑 Nastavení & API (Google Gemini)", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
-        api_key = st.text_input("Google Gemini API Key", type="password", help="Získejte svůj klíč na https://aistudio.google.com/")
+        api_key = st.text_input("Google Gemini API Key", type="password", help="Získejte svůj klíč zdarma na https://aistudio.google.com/")
     with col2:
         model_options = {
             "Gemini 3 Flash (Preview)": "gemini-3-flash-preview",
@@ -236,43 +297,51 @@ with st.expander("ℹ️ Nastavení & API", expanded=True):
         model_choice = model_options[selected_label]
 
     if not api_key:
-        st.warning("Zadejte svůj API klíč pro pokračování.")
+        st.warning("⚠️ Nezapomeň zadat svůj API klíč pro pokračování.")
 
 with st.form("lab_report_form"):
-    # 1. Téma
-    topic = st.text_input("Téma měření", placeholder="Např. Měření zatěžovací charakteristiky zdroje")
+    st.markdown("### 📌 Základní informace")
+    topic = st.text_input("Téma měření", placeholder="Např. Oživování a měření na stabilizovaném zdroji...", help="Téma, které se propíše do hlavičky protokolu.")
+    
+    st.markdown("---")
+    st.markdown("### 📂 Podklady pro AI (až 10 souborů na sekci!)")
+    st.markdown("Můžeš nahrát tabulky, pdf zadání ze školy, fotky z mobilu z měření, cokoliv máš na sobě.")
     
     col_a, col_b = st.columns(2)
     with col_a:
-        st.markdown("### 📝 Zadání")
-        assignment_file = st.file_uploader("Nahrát zadání (Text/Word/PDF/Img)", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="assignment", accept_multiple_files=False)
+        st.markdown("#### 📝 Z čeho měříme?")
+        assignment_file = st.file_uploader("Zadání úlohy", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="assignment", accept_multiple_files=True, help="Třeba fotka zadání (max 10 souborů)")
         
-        st.markdown("### 🔌 Přístroje")
-        instruments_file = st.file_uploader("Seznam přístrojů (Text/Word/PDF/Img)", type=['txt', 'docx', 'pdf', 'xlsx', 'png', 'jpg', 'jpeg'], key="instruments", accept_multiple_files=False)
+        instruments_file = st.file_uploader("Seznam použitých přístrojů", type=['txt', 'docx', 'pdf', 'xlsx', 'png', 'jpg', 'jpeg'], key="instruments", accept_multiple_files=True, help="Odkud AI vyčte přístroje (max 10 souborů)")
         
-        st.markdown("### 📊 Naměřená data")
-        data_files = st.file_uploader("Tabulka hodnot (Excel/CSV/Text/PDF/Img) - Možno více", type=['xlsx', 'csv', 'txt', 'pdf', 'png', 'jpg', 'jpeg'], key="data", accept_multiple_files=True)
+        data_files = st.file_uploader("Tabulky naměřených hodnot", type=['xlsx', 'csv', 'txt', 'pdf', 'png', 'jpg', 'jpeg'], key="data", accept_multiple_files=True, help="Hodně pomůže Excel nebo čitelná fotka hodnot (max 10 souborů)")
 
     with col_b:
-        st.markdown("### 📖 Teorie (Osnova)")
-        theory_file = st.file_uploader("Podklady k teorii (Text/Word/PDF/Img)", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="theory", accept_multiple_files=False)
+        st.markdown("#### 🧠 Odborná část a co pak?")
+        theory_file = st.file_uploader("Podklady k teorii", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="theory", accept_multiple_files=True, help="Třeba screenshoty skript nebo prezentace (max 10 souborů)")
 
-        st.markdown("### 🔧 Postup (Pro přepis)")
-        procedure_file = st.file_uploader("Pracovní postup (Text/Word/PDF/Img)", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="procedure", accept_multiple_files=False)
+        procedure_file = st.file_uploader("Pracovní postup", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="procedure", accept_multiple_files=True, help="Materiál, z kterého AI přepíše postup do min. času (max 10 souborů)")
 
-        st.markdown("### 🏁 Závěr (Osnova)")
-        conclusion_file = st.file_uploader("Osnova závěru (Text/Word/PDF/Img)", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="conclusion", accept_multiple_files=False)
+        conclusion_file = st.file_uploader("Osnova pro závěr", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="conclusion", accept_multiple_files=True, help="Zadání toho, co musí být v závěru uvedeno (max 10 souborů)")
 
-    st.markdown("### 🖼️ Schéma zapojení (Možno více)")
-    schema_files = st.file_uploader("Obrázek schématu (PNG/JPG)", type=['png', 'jpg', 'jpeg'], key="schema", accept_multiple_files=True)
+    st.markdown("---")
+    st.markdown("#### 🖼️ Schéma zapojení")
+    schema_files = st.file_uploader("Nahraj schémata zapojení pro protokol", type=['png', 'jpg', 'jpeg'], key="schema", accept_multiple_files=True, help="Obrázky, které se vloží do sekce Schéma zapojení (max 10 souborů)")
 
-    submitted = st.form_submit_button("Generovat protokol")
+    st.markdown("<br>", unsafe_allow_html=True)
+    submitted = st.form_submit_button("🚀 Vygenerovat nadupaný protokol")
 
 if submitted:
-    if not api_key:
-        st.error("Chybí API klíč!")
+    # Kontrola maximálně 10 souborů na sekci
+    files_groups = [assignment_file, instruments_file, data_files, theory_file, procedure_file, conclusion_file, schema_files]
+    over_limit = any(f is not None and len(f) > 10 for f in files_groups if isinstance(f, list))
+    
+    if over_limit:
+        st.error("❌ Nahrál jsi pod jednu sekci víc než 10 souborů! AI to nezvládne zpracovat. Vrať se a limituj je na max 10.")
+    elif not api_key:
+        st.error("❌ Nejdřív doplň svůj Google Gemini API klíč!")
     elif not topic:
-        st.error("Vyplňte prosím Téma měření.")
+        st.error("❌ Musíš uvést Téma měření!")
     else:
         with st.spinner("Zpracovávám soubory a generuji protokol..."):
             
@@ -313,7 +382,8 @@ if submitted:
             ai_data = generate_lab_report(api_key, model_choice, topic, inputs_map)
             
             if ai_data:
-                st.success("Generování dokončeno!")
+                st.balloons()
+                st.success("🎉 Úspěšně vygenerováno! Tady je tvůj základ záchrany.")
                 
                 # Preview
                 st.subheader("Náhled obsahu:")
