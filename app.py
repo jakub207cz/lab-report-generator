@@ -219,59 +219,81 @@ st.set_page_config(page_title="AI Lab Report Generator", layout="wide", page_ico
 # Moderní stylování pro lepší vzhled a přívětivost pro studenty
 st.markdown("""
 <style>
-    /* Global styling */
-    .stApp {
-        background-color: #f4f7f6;
+    /* Odstranění marginů a paddingů pro mobilní responzivitu */
+    @media (max-width: 768px) {
+        .block-container {
+            padding-top: 1rem;
+            padding-bottom: 1rem;
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
     }
-    
-    /* Vylepšení nadpisů */
+
+    /* Vylepšení nadpisů s responzivní velikostí písma (clamp) */
     h1, h2, h3 {
-        color: #2c3e50;
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     }
     
     .main-title {
         text-align: center;
-        font-size: 3em;
+        font-size: clamp(2.5em, 6vw, 4em);
         font-weight: 800;
-        background: -webkit-linear-gradient(#4facfe, #00f2fe);
+        background: -webkit-linear-gradient(45deg, #00f2fe, #4facfe, #00f2fe);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
+        background-size: 200% auto;
         margin-bottom: 0.1em;
+        animation: shine 3s linear infinite;
     }
+    
+    @keyframes shine {
+      to {
+        background-position: 200% center;
+      }
+    }
+
     .sub-title {
         text-align: center;
-        color: #7f8c8d;
-        font-size: 1.2em;
+        color: #a0aec0;
+        font-size: clamp(1em, 3vw, 1.2em);
         margin-bottom: 2em;
     }
     
-    /* Tlačítko pro generování - jako primary CTA */
+    /* Vylepšené Tlačítko pro generování - moderní glassmorphism & gradients */
     .stButton>button {
-        background-color: #00f2fe;
-        color: #1a1a1a;
-        border-radius: 8px;
+        background: linear-gradient(90deg, #00f2fe 0%, #4facfe 100%);
+        color: #0e1117 !important;
+        border-radius: 12px;
         border: none;
-        padding: 12px 24px;
-        font-weight: bold;
-        font-size: 1.1em;
+        padding: 14px 24px;
+        font-weight: 800;
+        font-size: 1.15em;
         transition: all 0.3s ease;
         width: 100%;
-        box-shadow: 0 4px 6px rgba(0, 242, 254, 0.2);
+        box-shadow: 0 4px 15px rgba(0, 242, 254, 0.4);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
     }
     .stButton>button:hover {
-        background-color: #4facfe;
-        color: white;
-        transform: translateY(-2px);
-        box-shadow: 0 6px 8px rgba(0, 242, 254, 0.4);
+        background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
+        color: #ffffff !important;
+        transform: translateY(-3px);
+        box-shadow: 0 8px 25px rgba(0, 242, 254, 0.6);
     }
     
-    /* Zvýraznění bloků se soubory */
+    /* Boxy pro nahrávání - jemnější okraje s hover efektem */
     div[data-testid="stFileUploader"] {
-        background: white;
-        padding: 10px;
-        border-radius: 10px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        background: rgba(30, 37, 48, 0.6);
+        padding: 15px;
+        border-radius: 12px;
+        box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.05), 0 4px 10px rgba(0,0,0,0.2);
+        border: 1px solid #2d3748;
+        transition: all 0.3s ease-in-out;
+        backdrop-filter: blur(10px);
+    }
+    div[data-testid="stFileUploader"]:hover {
+        border-color: #00f2fe;
+        box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.05), 0 4px 15px rgba(0, 242, 254, 0.15);
     }
 </style>
 """, unsafe_allow_html=True)
