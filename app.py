@@ -73,55 +73,57 @@ def extract_content_from_files(uploaded_files):
         
     return text_content, images
 
-def generate_lab_report(api_key, model_name, topic, inputs_map):
+def generate_lab_report(api_key, model_name, topic, inputs_map, is_handwritten=False):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(model_name)
 
-    system_prompt = """
+    theory_length = "ZKRÁCENÝ ROZSAH: Maximálně půl strany A4! Piš velmi stručně a jen to nejdůležitější, protože to bude student přepisovat ručně." if is_handwritten else "Rozsah: cca 1.5 strany A4, min. 1000 slov"
+    conclusion_length = "ZKRÁCENÝ ROZSAH: Maximálně půl strany A4! Stručné zhodnocení." if is_handwritten else "Fakta a detailní analýza"
+
+    system_prompt = f"""
     Jsi student 3. ročníku SPŠE (Střední průmyslová škola elektrotechnická). 
     Tvým úkolem je napsat školní laboratorní protokol (elaborát).
     
-    Téma: {topic}
+    Téma: {{topic}}
 
     DŮLEŽITÉ PRAVIDLO PRO CHYBĚJÍCÍ ZDROJE:
     Pokud u jakékoliv sekce (Teorie, Postup, Závěr) zjistíš, že nebyly poskytnuty ŽÁDNÉ podklady (žádný text ani relevantní nápověda), tvojí povinností je tuto sekci SAMOSTATNĚ VYGENEROVAT podle nejlepších znalostí k danému tématu. Na úplný začátek této dovygenerované sekce však MUSÍŠ přidat přesně tuto větu velkými písmeny:
-    "NEBYL PŘILOŽEN ZDROJ INFORMACÍ, AI TI TO VYGENEROVALA. ZKONTROLUJ SI TO!\n\n"
+    "NEBYL PŘILOŽEN ZDROJ INFORMACÍ, AI TI TO VYGENEROVALA. ZKONTROLUJ SI TO!\\n\\n"
 
     POSTUPUJ PODLE TĚCHTO SEKCI:
 
-    1. TEORIE (Rozsah: cca 1.5 strany A4, min. 1000 slov)
+    1. TEORIE ({theory_length})
        - Vycházej z přiloženého textu/osnovy:
-       {theory_text}
+       {{theory_text}}
+       - ODDĚLENĚ NAHRANÉ GRAFICKÉ PRŮBĚHY:
+       {{waveforms_text}}
        - Pokud není nic přiloženo, sekci kompletně vygeneruj a nezapomeň na povinnou větu: "NEBYL PŘILOŽEN ZDROJ INFORMACÍ...".
-       - Text musí být odborný a vyčerpávající. Vysvětli fyzikální principy, vzorce, odvození a souvislosti.
-       - KRITICKY DŮLEŽITÉ: Učitelé velmi potrpí na grafické průběhy. V teoretickém úvodu se VŽDY snaž přidat k textu detailní popis grafických průběhů k danému tématu (např. průběh napětí, charakteristiky součástky apod.). Pokud jsou přiloženy v zadání obrázky průběhů, detailně je textově popiš a zanalyzuj.
+       - Text musí být odborný a vyčerpávající. Vysvětli fyzikální principy, vzorce, odvození a souvislosti (při ručním psaní pouze to nezbytné).
+       - KRITICKY DŮLEŽITÉ: Učitelé velmi potrpí na grafické průběhy. Vyhodnoť odděleně nahrané obrázky grafických průběhů (případně ty v zadání) a v teoretickém úvodu je detailně textově popiš a zanalyzuj. Vysvětli, co znamenají.
 
     2. POSTUP MĚŘENÍ
        - PŘEPIŠ přiložený text pracovního postupu do 1. OSOBY MINULÉHO ČASU (např. změň "Změřte napětí" na "Změřil jsem napětí").
        - Zdrojový text postupu:
-       {procedure_text}
+       {{procedure_text}}
        - Pokud není přiložen postup, logicky jej k tématu dovygeneruj a nezapomeň na povinnou větu: "NEBYL PŘILOŽEN ZDROJ INFORMACÍ...".
        - Pokud jsou přiloženy obrázky, odkazuj se na ně textem (např. "jak je vidět na obrázku 1").
 
     3. PŘÍKLAD VÝPOČTU
-       - Na základě naměřených dat ({data_text}) a teorie vytvoř JEDEN KONKRÉTNÍ PŘÍKLAD výpočtu.
+       - Na základě naměřených dat ({{data_text}}) a teorie vytvoř JEDEN KONKRÉTNÍ PŘÍKLAD výpočtu.
        - Uveď vzorec, dosaď konkrétní naměřené hodnoty (např. U=10V, I=2A) a vypočítej výsledek. Výpočet musí být fyzikálně správný.
 
-    4. ZÁVĚR (Fakta a Analýza)
-       - Vycházej z naměřených hodnot ({data_text}) a přiložené osnovy:
-       {conclusion_text}
+    4. ZÁVĚR ({conclusion_length})
+       - Vycházej z naměřených hodnot ({{data_text}}) a přiložené osnovy:
+       {{conclusion_text}}
        - Pokud osnova závěru chybí (nebo chybí data), závěr dovygeneruj obecněji na základě tématu a teorie, a dej na začátek povinnou větu: "NEBYL PŘILOŽEN ZDROJ INFORMACÍ...".
        - Zhodnoť měření technicky a kriticky. CITUJ KONKRÉTNÍ HODNOTY z naměřených dat (pokud vůbec nějaká jsou). Porovnej s teorií.
 
     DALŠÍ VSTUPY:
     --- ZADÁNÍ ---
-    {assignment_text}
+    {{assignment_text}}
     
     --- POUŽITÉ PŘÍSTROJE ---
-    {instruments_text}
-    
-    --- NAMĚŘENÉ HODNOTY ---
-    {data_text}
+    {{instruments_text}}
 
     DŮLEŽITÉ: Rovnice piš jako prostý text (R=U/I).
     
@@ -137,6 +139,7 @@ def generate_lab_report(api_key, model_name, topic, inputs_map):
     formatted_prompt = system_prompt.format(
         topic=topic,
         theory_text=inputs_map.get('theory_text', ''),
+        waveforms_text=inputs_map.get('waveforms_text', ''),
         procedure_text=inputs_map.get('procedure_text', ''),
         conclusion_text=inputs_map.get('conclusion_text', ''),
         assignment_text=inputs_map.get('assignment_text', ''),
@@ -327,6 +330,7 @@ with st.expander("🔑 Nastavení & API (Google Gemini)", expanded=True):
 with st.form("lab_report_form"):
     st.markdown("### 📌 Základní informace")
     topic = st.text_input("Téma měření", placeholder="Např. Oživování a měření na stabilizovaném zdroji...", help="Téma, které se propíše do hlavičky protokolu.")
+    is_handwritten = st.toggle("📝 Píšu tenhle elaborát ručně! (Zkrátí teorii a závěr na max. půl A4)", value=False, help="Zapni, abys nedostal do generování kilometry textu a nemusel jsi ho celý ručně přepisovat. AI Tě ušetří.")
     
     st.markdown("---")
     st.markdown("### 📂 Podklady pro AI (až 10 souborů na sekci!)")
@@ -339,6 +343,8 @@ with st.form("lab_report_form"):
     data_files = st.file_uploader("Tabulky naměřených hodnot", type=['xlsx', 'csv', 'txt', 'pdf', 'png', 'jpg', 'jpeg'], key="data", accept_multiple_files=True, help="Hodně pomůže Excel nebo čitelná fotka hodnot (max 10 souborů)")
 
     theory_file = st.file_uploader("Podklady k teorii", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="theory", accept_multiple_files=True, help="Třeba screenshoty skript nebo prezentace (max 10 souborů)")
+
+    waveforms_file = st.file_uploader("Grafické průběhy k teorii (Novinka!)", type=['png', 'jpg', 'jpeg', 'pdf'], key="waveforms", accept_multiple_files=True, help="Nahraj fotky nebo PDF průběhů. AI je rozpozná a řádně vysvětlí v teoretické části! (max 10 souborů)")
 
     procedure_file = st.file_uploader("Pracovní postup", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="procedure", accept_multiple_files=True, help="Materiál, z kterého AI přepíše postup do min. času (max 10 souborů)")
 
@@ -369,6 +375,7 @@ if submitted:
             instruments_text, instruments_images = extract_content_from_files(instruments_file)
             data_text, data_images = extract_content_from_files(data_files)
             theory_text, theory_images = extract_content_from_files(theory_file)
+            waveforms_text, waveforms_images = extract_content_from_files(waveforms_file)
             procedure_text, procedure_images = extract_content_from_files(procedure_file)
             conclusion_text, conclusion_images = extract_content_from_files(conclusion_file)
             
@@ -386,18 +393,19 @@ if submitted:
                 'instruments_text': instruments_text,
                 'data_text': data_text,
                 'theory_text': theory_text,
+                'waveforms_text': waveforms_text,
                 'procedure_text': procedure_text,
                 'conclusion_text': conclusion_text,
                 'schema_images': schema_images_list,
                 'data_images': data_images,
                 'images_lists': [
                     assignment_images, instruments_images, data_images, 
-                    theory_images, procedure_images, conclusion_images
+                    theory_images, waveforms_images, procedure_images, conclusion_images
                 ]
             }
 
             # Generate Logic
-            ai_data = generate_lab_report(api_key, model_choice, topic, inputs_map)
+            ai_data = generate_lab_report(api_key, model_choice, topic, inputs_map, is_handwritten)
             
             if ai_data:
                 st.balloons()
