@@ -83,32 +83,35 @@ def generate_lab_report(api_key, model_name, topic, inputs_map):
     
     Téma: {topic}
 
+    DŮLEŽITÉ PRAVIDLO PRO CHYBĚJÍCÍ ZDROJE:
+    Pokud u jakékoliv sekce (Teorie, Postup, Závěr) zjistíš, že nebyly poskytnuty ŽÁDNÉ podklady (žádný text ani relevantní nápověda), tvojí povinností je tuto sekci SAMOSTATNĚ VYGENEROVAT podle nejlepších znalostí k danému tématu. Na úplný začátek této dovygenerované sekce však MUSÍŠ přidat přesně tuto větu velkými písmeny:
+    "NEBYL PŘILOŽEN ZDROJ INFORMACÍ, AI TI TO VYGENEROVALA. ZKONTROLUJ SI TO!\n\n"
+
     POSTUPUJ PODLE TĚCHTO SEKCI:
 
     1. TEORIE (Rozsah: cca 1.5 strany A4, min. 1000 slov)
        - Vycházej z přiloženého textu/osnovy:
        {theory_text}
-       - Pokud není nic přiloženo, napiš velmi podrobnou teorii k tématu. Vysvětli fyzikální principy, vzorce, odvození a souvislosti.
-       - Text musí být odborný a vyčerpávající.
+       - Pokud není nic přiloženo, sekci kompletně vygeneruj a nezapomeň na povinnou větu: "NEBYL PŘILOŽEN ZDROJ INFORMACÍ...".
+       - Text musí být odborný a vyčerpávající. Vysvětli fyzikální principy, vzorce, odvození a souvislosti.
+       - KRITICKY DŮLEŽITÉ: Učitelé velmi potrpí na grafické průběhy. V teoretickém úvodu se VŽDY snaž přidat k textu detailní popis grafických průběhů k danému tématu (např. průběh napětí, charakteristiky součástky apod.). Pokud jsou přiloženy v zadání obrázky průběhů, detailně je textově popiš a zanalyzuj.
 
     2. POSTUP MĚŘENÍ
        - PŘEPIŠ přiložený text pracovního postupu do 1. OSOBY MINULÉHO ČASU (např. změň "Změřte napětí" na "Změřil jsem napětí").
        - Zdrojový text postupu:
        {procedure_text}
+       - Pokud není přiložen postup, logicky jej k tématu dovygeneruj a nezapomeň na povinnou větu: "NEBYL PŘILOŽEN ZDROJ INFORMACÍ...".
        - Pokud jsou přiloženy obrázky, odkazuj se na ně textem (např. "jak je vidět na obrázku 1").
 
     3. PŘÍKLAD VÝPOČTU
        - Na základě naměřených dat ({data_text}) a teorie vytvoř JEDEN KONKRÉTNÍ PŘÍKLAD výpočtu.
-       - Uveď vzorec, dosaď konkrétní naměřené hodnoty (např. U=10V, I=2A) a vypočítej výsledek.
-       - Výpočet musí být fyzikálně správný.
+       - Uveď vzorec, dosaď konkrétní naměřené hodnoty (např. U=10V, I=2A) a vypočítej výsledek. Výpočet musí být fyzikálně správný.
 
     4. ZÁVĚR (Fakta a Analýza)
-       - Vycházej POUZE z naměřených hodnot ({data_text}) a přiložené osnovy:
+       - Vycházej z naměřených hodnot ({data_text}) a přiložené osnovy:
        {conclusion_text}
-       - Zhodnoť měření technicky a kriticky.
-       - CITUJ KONKRÉTNÍ HODNOTY z naměřených dat. Např. "Naměřil jsem napětí 5.2 V, což odpovídá..."
-       - NEVYMÝŠLEJ SI ŽÁDNÉ HODNOTY. Pokud data chybí, napiš, že nebylo možné vyhodnotit.
-       - Porovnej naměřené hodnoty s teoretickými předpoklady.
+       - Pokud osnova závěru chybí (nebo chybí data), závěr dovygeneruj obecněji na základě tématu a teorie, a dej na začátek povinnou větu: "NEBYL PŘILOŽEN ZDROJ INFORMACÍ...".
+       - Zhodnoť měření technicky a kriticky. CITUJ KONKRÉTNÍ HODNOTY z naměřených dat (pokud vůbec nějaká jsou). Porovnej s teorií.
 
     DALŠÍ VSTUPY:
     --- ZADÁNÍ ---
