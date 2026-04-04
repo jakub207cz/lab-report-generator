@@ -327,28 +327,21 @@ with st.form("lab_report_form"):
     
     st.markdown("---")
     st.markdown("### 📂 Podklady pro AI (až 10 souborů na sekci!)")
-    st.markdown("Můžeš nahrát tabulky, pdf zadání ze školy, fotky z mobilu z měření, cokoliv máš na sobě.")
+    st.markdown("Můžeš nahrát tabulky, pdf zadání ze školy, fotky z mobilu z měření, cokoliv máš.")
     
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown("#### 📝 Z čeho měříme?")
-        assignment_file = st.file_uploader("Zadání úlohy", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="assignment", accept_multiple_files=True, help="Třeba fotka zadání (max 10 souborů)")
-        
-        instruments_file = st.file_uploader("Seznam použitých přístrojů", type=['txt', 'docx', 'pdf', 'xlsx', 'png', 'jpg', 'jpeg'], key="instruments", accept_multiple_files=True, help="Odkud AI vyčte přístroje (max 10 souborů)")
-        
-        data_files = st.file_uploader("Tabulky naměřených hodnot", type=['xlsx', 'csv', 'txt', 'pdf', 'png', 'jpg', 'jpeg'], key="data", accept_multiple_files=True, help="Hodně pomůže Excel nebo čitelná fotka hodnot (max 10 souborů)")
+    assignment_file = st.file_uploader("Zadání úlohy", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="assignment", accept_multiple_files=True, help="Třeba fotka zadání (max 10 souborů)")
+    
+    instruments_file = st.file_uploader("Seznam použitých přístrojů", type=['txt', 'docx', 'pdf', 'xlsx', 'png', 'jpg', 'jpeg'], key="instruments", accept_multiple_files=True, help="Odkud AI vyčte přístroje (max 10 souborů)")
+    
+    data_files = st.file_uploader("Tabulky naměřených hodnot", type=['xlsx', 'csv', 'txt', 'pdf', 'png', 'jpg', 'jpeg'], key="data", accept_multiple_files=True, help="Hodně pomůže Excel nebo čitelná fotka hodnot (max 10 souborů)")
 
-    with col_b:
-        st.markdown("#### 🧠 Odborná část a co pak?")
-        theory_file = st.file_uploader("Podklady k teorii", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="theory", accept_multiple_files=True, help="Třeba screenshoty skript nebo prezentace (max 10 souborů)")
+    theory_file = st.file_uploader("Podklady k teorii", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="theory", accept_multiple_files=True, help="Třeba screenshoty skript nebo prezentace (max 10 souborů)")
 
-        procedure_file = st.file_uploader("Pracovní postup", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="procedure", accept_multiple_files=True, help="Materiál, z kterého AI přepíše postup do min. času (max 10 souborů)")
+    procedure_file = st.file_uploader("Pracovní postup", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="procedure", accept_multiple_files=True, help="Materiál, z kterého AI přepíše postup do min. času (max 10 souborů)")
 
-        conclusion_file = st.file_uploader("Osnova pro závěr", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="conclusion", accept_multiple_files=True, help="Zadání toho, co musí být v závěru uvedeno (max 10 souborů)")
+    conclusion_file = st.file_uploader("Osnova pro závěr", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="conclusion", accept_multiple_files=True, help="Zadání toho, co musí být v závěru uvedeno (max 10 souborů)")
 
-    st.markdown("---")
-    st.markdown("#### 🖼️ Schéma zapojení")
-    schema_files = st.file_uploader("Nahraj schémata zapojení pro protokol", type=['png', 'jpg', 'jpeg'], key="schema", accept_multiple_files=True, help="Obrázky, které se vloží do sekce Schéma zapojení (max 10 souborů)")
+    schema_files = st.file_uploader("Schéma zapojení pro protokol", type=['png', 'jpg', 'jpeg'], key="schema", accept_multiple_files=True, help="Obrázky, které se vloží do sekce Schéma zapojení (max 10 souborů)")
 
     st.markdown("<br>", unsafe_allow_html=True)
     submitted = st.form_submit_button("🚀 Vygenerovat nadupaný protokol")
