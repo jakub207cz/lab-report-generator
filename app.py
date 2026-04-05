@@ -13,13 +13,13 @@ import pypdf
 def set_document_formatting(doc):
     style = doc.styles['Normal']
     font = style.font
-    font.name = 'Times New Roman'
+    font.name = 'Calibri'
     font.size = Pt(12)
     
     # Also set for parsed styles if needed, but Normal covers most
     for style in doc.styles:
         if hasattr(style, 'font'):
-            style.font.name = 'Times New Roman'
+            style.font.name = 'Calibri'
 
 
 def extract_content_from_files(uploaded_files):
@@ -125,7 +125,7 @@ def generate_lab_report(api_key, model_name, topic, inputs_map, is_handwritten=F
     --- POUŽITÉ PŘÍSTROJE ---
     {inputs_map.get('instruments_text', '')}
 
-    DŮLEŽITÉ: Rovnice piš jako prostý text (R=U/I).
+    DŮLEŽITÉ: Rovnice piš jako prostý text (R=U/I). U všech desetinných čísel v textu používej výhradně desetinnou čárku, nikoliv tečku (např. 0,5 místo 0.5). Pro znak násobení ve výpočtech VŽDY používej tečku (.), nepoužívej hvězdičku (*).
     
     Vygeneruj výstup POUZE jako validní JSON s následující strukturou:
     {{
@@ -177,9 +177,9 @@ def fill_template_docx(template_path, topic, inputs_map, ai_content):
         
         if text:
             new_p = doc.add_paragraph()
-            new_p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            new_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
             runner = new_p.add_run(text)
-            runner.font.name = 'Times New Roman'
+            runner.font.name = 'Calibri'
             runner.font.size = Pt(12)
             parent.insert(index + 1, new_p._element)
             index += 1
