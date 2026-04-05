@@ -109,8 +109,8 @@ def generate_lab_report(api_key, model_name, topic, inputs_map, is_handwritten=F
        - Pokud jsou přiloženy obrázky, odkazuj se na ně textem (např. "jak je vidět na obrázku 1").
 
     3. PŘÍKLAD VÝPOČTU
-       - Na základě naměřených dat ({inputs_map.get('data_text', '')}) a teorie vytvoř JEDEN KONKRÉTNÍ PŘÍKLAD výpočtu.
-       - Uveď vzorec, dosaď konkrétní naměřené hodnoty (např. U=10V, I=2A) a vypočítej výsledek. Výpočet musí být fyzikálně správný.
+       - Na základě naměřených dat ({inputs_map.get('data_text', '')}) a teorie vytvoř VÍCE NEŽ JEDEN příklad výpočtu. Ideálně vytvoř JEDEN KONKRÉTNÍ PŘÍKLAD pro každý způsob / typ výpočtu použitý v dané úloze.
+       - U každého uveď vzorec, dosaď konkrétní naměřené hodnoty (např. U=10V, I=2A) a vypočítej výsledek. Výpočty musí být fyzikálně správné.
 
     4. ZÁVĚR ({conclusion_length})
        - Vycházej z naměřených hodnot ({inputs_map.get('data_text', '')}) a přiložené osnovy:
@@ -163,7 +163,7 @@ def fill_template_docx(template_path, topic, inputs_map, ai_content):
 
     # Map headers to content
     sections_map = {
-        "Teoretický úvod": {"text": ai_content.get('teorie', ''), "images": []},
+        "Teoretický úvod": {"text": ai_content.get('teorie', ''), "images": inputs_map.get('waveforms_images', [])},
         "Schéma zapojení": {"text": "", "images": inputs_map.get('schema_images', [])},
         "Postup měření": {"text": ai_content.get('postup', ''), "images": []},
         "Naměřené a vypočítané hodnoty": {"text": "", "images": inputs_map.get('data_images', [])},
@@ -387,6 +387,7 @@ if submitted:
                 'conclusion_text': conclusion_text,
                 'schema_images': schema_images_list,
                 'data_images': data_images,
+                'waveforms_images': waveforms_images,
                 'images_lists': [
                     assignment_images, instruments_images, data_images, 
                     theory_images, waveforms_images, procedure_images, conclusion_images
