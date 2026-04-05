@@ -84,7 +84,7 @@ def generate_lab_report(api_key, model_name, topic, inputs_map, is_handwritten=F
     Jsi student 3. ročníku SPŠE (Střední průmyslová škola elektrotechnická). 
     Tvým úkolem je napsat školní laboratorní protokol (elaborát).
     
-    Téma: {{topic}}
+    Téma: {topic}
 
     DŮLEŽITÉ PRAVIDLO PRO CHYBĚJÍCÍ ZDROJE:
     Pokud u jakékoliv sekce (Teorie, Postup, Závěr) zjistíš, že nebyly poskytnuty ŽÁDNÉ podklady (žádný text ani relevantní nápověda), tvojí povinností je tuto sekci SAMOSTATNĚ VYGENEROVAT podle nejlepších znalostí k danému tématu. Na úplný začátek této dovygenerované sekce však MUSÍŠ přidat přesně tuto větu velkými písmeny:
@@ -94,9 +94,9 @@ def generate_lab_report(api_key, model_name, topic, inputs_map, is_handwritten=F
 
     1. TEORIE ({theory_length})
        - Vycházej z přiloženého textu/osnovy:
-       {{theory_text}}
+       {inputs_map.get('theory_text', '')}
        - ODDĚLENĚ NAHRANÉ GRAFICKÉ PRŮBĚHY:
-       {{waveforms_text}}
+       {inputs_map.get('waveforms_text', '')}
        - Pokud není nic přiloženo, sekci kompletně vygeneruj a nezapomeň na povinnou větu: "NEBYL PŘILOŽEN ZDROJ INFORMACÍ...".
        - Text musí být odborný a vyčerpávající. Vysvětli fyzikální principy, vzorce, odvození a souvislosti (při ručním psaní pouze to nezbytné).
        - KRITICKY DŮLEŽITÉ: Učitelé velmi potrpí na grafické průběhy. Vyhodnoť odděleně nahrané obrázky grafických průběhů (případně ty v zadání) a v teoretickém úvodu je detailně textově popiš a zanalyzuj. Vysvětli, co znamenají.
@@ -104,26 +104,26 @@ def generate_lab_report(api_key, model_name, topic, inputs_map, is_handwritten=F
     2. POSTUP MĚŘENÍ
        - PŘEPIŠ přiložený text pracovního postupu do 1. OSOBY MINULÉHO ČASU (např. změň "Změřte napětí" na "Změřil jsem napětí").
        - Zdrojový text postupu:
-       {{procedure_text}}
+       {inputs_map.get('procedure_text', '')}
        - Pokud není přiložen postup, logicky jej k tématu dovygeneruj a nezapomeň na povinnou větu: "NEBYL PŘILOŽEN ZDROJ INFORMACÍ...".
        - Pokud jsou přiloženy obrázky, odkazuj se na ně textem (např. "jak je vidět na obrázku 1").
 
     3. PŘÍKLAD VÝPOČTU
-       - Na základě naměřených dat ({{data_text}}) a teorie vytvoř JEDEN KONKRÉTNÍ PŘÍKLAD výpočtu.
+       - Na základě naměřených dat ({inputs_map.get('data_text', '')}) a teorie vytvoř JEDEN KONKRÉTNÍ PŘÍKLAD výpočtu.
        - Uveď vzorec, dosaď konkrétní naměřené hodnoty (např. U=10V, I=2A) a vypočítej výsledek. Výpočet musí být fyzikálně správný.
 
     4. ZÁVĚR ({conclusion_length})
-       - Vycházej z naměřených hodnot ({{data_text}}) a přiložené osnovy:
-       {{conclusion_text}}
+       - Vycházej z naměřených hodnot ({inputs_map.get('data_text', '')}) a přiložené osnovy:
+       {inputs_map.get('conclusion_text', '')}
        - Pokud osnova závěru chybí (nebo chybí data), závěr dovygeneruj obecněji na základě tématu a teorie, a dej na začátek povinnou větu: "NEBYL PŘILOŽEN ZDROJ INFORMACÍ...".
        - Zhodnoť měření technicky a kriticky. CITUJ KONKRÉTNÍ HODNOTY z naměřených dat (pokud vůbec nějaká jsou). Porovnej s teorií.
 
     DALŠÍ VSTUPY:
     --- ZADÁNÍ ---
-    {{assignment_text}}
+    {inputs_map.get('assignment_text', '')}
     
     --- POUŽITÉ PŘÍSTROJE ---
-    {{instruments_text}}
+    {inputs_map.get('instruments_text', '')}
 
     DŮLEŽITÉ: Rovnice piš jako prostý text (R=U/I).
     
@@ -135,19 +135,8 @@ def generate_lab_report(api_key, model_name, topic, inputs_map, is_handwritten=F
         "zaver": "..."
     }}
     """
-
-    formatted_prompt = system_prompt.format(
-        topic=topic,
-        theory_text=inputs_map.get('theory_text', ''),
-        waveforms_text=inputs_map.get('waveforms_text', ''),
-        procedure_text=inputs_map.get('procedure_text', ''),
-        conclusion_text=inputs_map.get('conclusion_text', ''),
-        assignment_text=inputs_map.get('assignment_text', ''),
-        instruments_text=inputs_map.get('instruments_text', ''),
-        data_text=inputs_map.get('data_text', '')
-    )
     
-    content_parts = [formatted_prompt]
+    content_parts = [system_prompt]
     
     # Add all images found in inputs
     for img_list in inputs_map.get('images_lists', []):
