@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 
 from docx import Document
@@ -223,3 +224,221 @@ def test_fill_template_docx_splits_wide_table_and_keeps_first_column() -> None:
     para_texts = [(p.text or "").strip() for p in generated.paragraphs]
     assert any("část 1/" in t for t in para_texts)
     assert any("část 2/" in t for t in para_texts)
+
+
+def test_fill_template_docx_rounds_all_numeric_values_and_zero_compacts() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    template_path = project_root / "DOCS" / "sablona_elab_em.docx"
+
+    ai_data = LabReportData(
+        teorie="",
+        postup="",
+        priklad_vypoctu="",
+        zaver="",
+        image_references=[],
+    )
+
+    inputs_map = {
+        "assignment_text": "",
+        "instruments_text": "",
+        "data_text": "Tabulka z měření:",
+        "data_tables": [
+            {
+                "source_file": "test.xlsx",
+                "sheet_name": "Sheet1",
+                "headers": ["Veličina", "Hodnota"],
+                "rows": [
+                    ["I", "12.34567"],
+                    ["A", "27.700"],
+                    ["B", "0.600"],
+                    ["C", "2.500"],
+                    ["D", "0.060"],
+                    ["U", "0.000"],
+                ],
+            }
+        ],
+        "waveforms_text": "",
+        "schema_images": [],
+        "schema_image_ids": [],
+        "waveforms_images": [],
+        "waveforms_image_ids": [],
+        "data_images": [],
+        "data_image_ids": [],
+        "username": "Tester",
+        "topic": "Zaokrouhlení tabulek",
+    }
+
+    out = fill_template_docx(
+        str(template_path),
+        inputs_map,
+        ai_data,
+        image_registry={},
+        username="Tester",
+        topic="Zaokrouhlení tabulek",
+    )
+
+    generated = Document(io.BytesIO(out.getvalue()))
+
+    # 1. tabulka = obálka, 2. tabulka = data
+    values = [
+        (cell.text or "").strip()
+        for row in generated.tables[1].rows
+        for cell in row.cells
+    ]
+    assert "12.346" in values
+    assert "27.7" in values
+    assert "0.6" in values
+    assert "2.5" in values
+    assert "0.06" in values
+    assert "0" in values
+    assert "27.700" not in values
+    assert "0.600" not in values
+    assert "2.500" not in values
+    assert "0.060" not in values
+    assert "0.000" not in values
+
+
+def test_fill_template_docx_graphs_have_page_break_between_images() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    template_path = project_root / "DOCS" / "sablona_elab_em.docx"
+
+    ai_data = LabReportData(teorie="", postup="", priklad_vypoctu="", zaver="", image_references=[])
+
+    inputs_map = {
+        "assignment_text": "",
+        "instruments_text": "",
+        "data_text": "",
+        "data_tables": [],
+        "waveforms_text": "",  # text část necháváme prázdnou, testujeme jen stránkování obrázků
+        "schema_images": [],
+        "schema_image_ids": [],
+        "waveforms_images": [
+            Image.new("RGB", (64, 64), color="red"),
+            Image.new("RGB", (64, 64), color="green"),
+            Image.new("RGB", (64, 64), color="blue"),
+        ],
+        "waveforms_image_ids": ["IMG-001", "IMG-002", "IMG-003"],
+        "data_images": [],
+        "data_image_ids": [],
+        "username": "Tester",
+        "topic": "Grafy po jedné stránce",
+    }
+
+    image_registry = {
+        "IMG-001": ImageAsset(image_id="IMG-001", filename="g1.png", section="waveforms"),
+        "IMG-002": ImageAsset(image_id="IMG-002", filename="g2.png", section="waveforms"),
+        "IMG-003": ImageAsset(image_id="IMG-003", filename="g3.png", section="waveforms"),
+    }
+
+    out = fill_template_docx(
+        str(template_path),
+        inputs_map,
+        ai_data,
+        image_registry=image_registry,
+        username="Tester",
+        topic="Grafy po jedné stránce",
+    )
+
+    generated = Document(io.BytesIO(out.getvalue()))
+    page_break_count = sum(p._p.xml.count('w:type="page"') for p in generated.paragraphs)
+
+    # Pro 3 grafy očekáváme minimálně 2 page breaky mezi nimi.
+    assert page_break_count >= 2
+
+
+def test_fill_template_docx_graphs_are_inserted_without_caption() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    template_path = project_root / "DOCS" / "sablona_elab_em.docx"
+
+    ai_data = LabReportData(teorie="", postup="", priklad_vypoctu="", zaver="", image_references=[])
+    inputs_map = {
+        "assignment_text": "",
+        "instruments_text": "",
+        "data_text": "",
+        "data_tables": [],
+        "waveforms_text": "",
+        "schema_images": [],
+        "schema_image_ids": [],
+        "waveforms_images": [Image.new("RGB", (64, 64), color="purple")],
+        "waveforms_image_ids": ["IMG-123"],
+        "data_images": [],
+        "data_image_ids": [],
+        "username": "Tester",
+        "topic": "Graf bez titulku",
+    }
+    image_registry = {
+        "IMG-123": ImageAsset(image_id="IMG-123", filename="graf.png", section="waveforms"),
+    }
+
+    out = fill_template_docx(
+        str(template_path),
+        inputs_map,
+        ai_data,
+        image_registry=image_registry,
+        username="Tester",
+        topic="Graf bez titulku",
+    )
+
+    generated = Document(io.BytesIO(out.getvalue()))
+    paragraph_texts = [(p.text or "").strip() for p in generated.paragraphs if (p.text or "").strip()]
+
+    assert not any("Obrázek IMG-123" in text for text in paragraph_texts)
+
+
+def test_fill_template_docx_renders_calculations_from_llm_json() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    template_path = project_root / "DOCS" / "sablona_elab_em.docx"
+
+    calc_payload = {
+        "items": [
+            {
+                "title": "Intenzita magnetického pole Hm",
+                "general_formula_latex": r"H_M = \\frac{\\sqrt{2}\\cdot I_1 \\cdot N_1}{l_{str}}",
+                "substitution_formula_latex": r"H_M = \\frac{\\sqrt{2}\\cdot 0.2 \\cdot 100}{0.15}",
+                "compute_expression": "(sqrt(2)*0.2*100)/0.15",
+                "result_symbol_latex": "H_M",
+                "result_unit_latex": "A/m",
+                "variables": {},
+            }
+        ]
+    }
+
+    ai_data = LabReportData(
+        teorie="",
+        postup="",
+        priklad_vypoctu=json.dumps(calc_payload, ensure_ascii=False),
+        zaver="",
+        image_references=[],
+    )
+
+    inputs_map = {
+        "assignment_text": "",
+        "instruments_text": "",
+        "data_text": "",
+        "data_tables": [],
+        "waveforms_text": "",
+        "schema_images": [],
+        "schema_image_ids": [],
+        "waveforms_images": [],
+        "waveforms_image_ids": [],
+        "data_images": [],
+        "data_image_ids": [],
+        "username": "Tester",
+        "topic": "Rovnice z LLM JSON",
+        "report_scope": "full",
+    }
+
+    out = fill_template_docx(
+        str(template_path),
+        inputs_map,
+        ai_data,
+        image_registry={},
+        username="Tester",
+        topic="Rovnice z LLM JSON",
+    )
+
+    generated = Document(io.BytesIO(out.getvalue()))
+    paragraph_texts = [(p.text or "").strip() for p in generated.paragraphs if (p.text or "").strip()]
+
+    assert any("Intenzita magnetického pole Hm" in text for text in paragraph_texts)
+    assert not any('"items"' in text for text in paragraph_texts)

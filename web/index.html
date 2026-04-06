@@ -27,6 +27,20 @@
           <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
         </select>
 
+                        <h2>Režim generování</h2>
+                        <label class="checkbox">
+                              <input type="checkbox" name="generate_full_report" value="true" checked />
+                              Vytvořit celý elaborát
+                        </label>
+                        <label class="checkbox">
+                              <input type="checkbox" name="generate_preparation_only" value="true" />
+                              Vytvořit pouze přípravu (teoretický úvod, schéma zapojení, postup měření)
+                        </label>
+                        <label class="checkbox">
+                              <input type="checkbox" name="generate_ending_only" value="true" />
+                              Vytvořit pouze konec elaborátu (tabulky hodnot, grafy, závěr, přístroje)
+                        </label>
+
         <label class="checkbox">
           <input type="checkbox" name="is_handwritten" value="true" />
           Ručně psaný elaborát (kratší výstup)

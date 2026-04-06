@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 import pandas as pd
 import pypdf
@@ -19,6 +19,8 @@ from pipeline.ingestion import BinarySource, IngestionPipeline
 from pipeline.schemas import ImageAsset
 from pipeline.validation import run_quality_check
 from render.docx_writer import fill_template_docx as fill_template_docx_structured
+
+ReportScope = Literal["full", "preparation", "ending"]
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"), override=False)
@@ -51,6 +53,9 @@ async def extract_content_from_uploadfiles(
     if not files:
         return text_content, images, image_assets, tables_payload, image_counter
 
+    spreadsheet_sources: List[BinarySource] = []
+    spreadsheet_raw_by_name: Dict[str, bytes] = {}
+
     for uploaded_file in files:
         try:
             raw = await uploaded_file.read()
@@ -64,58 +69,18 @@ async def extract_content_from_uploadfiles(
                 image_id = f"IMG-{image_counter:03d}"
                 image_counter += 1
                 image_assets.append(ImageAsset(image_id=image_id, filename=filename, section=section_name))
-                text_content += f"\n[Obrázek {image_id}: {filename}]\n"
 
             elif filename.lower().endswith((".xlsx", ".xls")) or "spreadsheet" in content_type:
-                try:
-                    ingestion = IngestionPipeline(enable_ocr=False)
-                    parsed = ingestion.ingest_sources(
-                        [
-                            BinarySource(
-                                filename=filename,
-                                data=raw,
-                                section_hint=section_name,
-                                mime_type=content_type,
-                            )
-                        ]
+                spreadsheet_sources.append(
+                    BinarySource(
+                        filename=filename,
+                        data=raw,
+                        section_hint=section_name,
+                        mime_type=content_type,
                     )
-
-                    if parsed.tables:
-                        text_content += f"\n--- {filename} ---\nNalezeno tabulek: {len(parsed.tables)}\n"
-                        for idx, table in enumerate(parsed.tables, start=1):
-                            headers = [str(h) for h in table.headers]
-                            rows = [[str(cell) for cell in row] for row in table.rows]
-                            tables_payload.append(
-                                {
-                                    "source_file": filename,
-                                    "sheet_name": table.sheet_name,
-                                    "headers": headers,
-                                    "rows": rows,
-                                }
-                            )
-                            text_content += f"- Tabulka {idx}: {table.sheet_name or 'Sheet'} ({len(rows)} řádků)\n"
-                    else:
-                        df = pd.read_excel(io.BytesIO(raw))
-                        text_content += f"\n--- {filename} ---\n" + df.to_markdown(index=False) + "\n"
-
-                    saved_figures = parsed.metadata.get("saved_figures", []) if isinstance(parsed.metadata, dict) else []
-                    for saved in saved_figures:
-                        image_path = str(saved.get("path", "")).strip()
-                        if not image_path:
-                            continue
-                        try:
-                            image = Image.open(image_path).convert("RGB")
-                        except Exception:
-                            continue
-
-                        image_id = f"IMG-{image_counter:03d}"
-                        image_counter += 1
-                        images.append(image)
-                        image_assets.append(ImageAsset(image_id=image_id, filename=os.path.basename(image_path), section=section_name))
-                        text_content += f"\n[Graf z XLSX {image_id}: {os.path.basename(image_path)}]\n"
-                except Exception:
-                    df = pd.read_excel(io.BytesIO(raw))
-                    text_content += f"\n--- {filename} ---\n" + df.to_markdown(index=False) + "\n"
+                )
+                spreadsheet_raw_by_name[filename] = raw
+                continue
 
             elif filename.lower().endswith(".docx") or "wordprocessing" in content_type:
                 doc = Document(io.BytesIO(raw))
@@ -136,6 +101,61 @@ async def extract_content_from_uploadfiles(
             continue
         except Exception:
             continue
+
+    if spreadsheet_sources:
+        parsed_tables_by_source: Dict[str, List[object]] = {}
+        saved_figures: List[Dict[str, object]] = []
+
+        try:
+            ingestion = IngestionPipeline(enable_ocr=False)
+            parsed = ingestion.ingest_sources(spreadsheet_sources)
+
+            for table in parsed.tables:
+                parsed_tables_by_source.setdefault(table.source_file, []).append(table)
+
+            if isinstance(parsed.metadata, dict):
+                saved_figures = parsed.metadata.get("saved_figures", []) or []
+        except Exception:
+            parsed_tables_by_source = {}
+            saved_figures = []
+
+        for source in spreadsheet_sources:
+            filename = source.filename
+            file_tables = parsed_tables_by_source.get(filename, [])
+
+            if file_tables:
+                for table in file_tables:
+                    headers = [str(h) for h in table.headers]
+                    rows = [[str(cell) for cell in row] for row in table.rows]
+                    tables_payload.append(
+                        {
+                            "source_file": filename,
+                            "sheet_name": table.sheet_name,
+                            "headers": headers,
+                            "rows": rows,
+                        }
+                    )
+            else:
+                try:
+                    df = pd.read_excel(io.BytesIO(spreadsheet_raw_by_name[filename]))
+                    text_content += f"\n--- {filename} ---\n" + df.to_markdown(index=False) + "\n"
+                except Exception:
+                    pass
+
+        # Přidej všechny grafy z všech XLSX souborů.
+        for saved in saved_figures:
+            image_path = str(saved.get("path", "")).strip()
+            if not image_path:
+                continue
+            try:
+                image = Image.open(image_path).convert("RGB")
+            except Exception:
+                continue
+
+            image_id = f"IMG-{image_counter:03d}"
+            image_counter += 1
+            images.append(image)
+            image_assets.append(ImageAsset(image_id=image_id, filename=os.path.basename(image_path), section=section_name))
 
     return text_content, images, image_assets, tables_payload, image_counter
 
@@ -282,12 +302,6 @@ def _reroute_xlsx_charts_from_data_to_waveforms(
                     section="waveforms",
                 )
             )
-
-            marker = f"[Graf z XLSX {asset.image_id}: {asset.filename}]"
-            if marker in data_text:
-                data_text = data_text.replace(marker, "").replace("\n\n", "\n")
-            if marker not in waveforms_text:
-                waveforms_text = (waveforms_text.rstrip() + "\n" + marker + "\n").strip() + "\n"
             continue
 
         kept_data_images.append(img)
@@ -346,6 +360,28 @@ def _build_docx(
     return out
 
 
+def _resolve_report_scope(
+    report_scope: str,
+    generate_full_report: bool,
+    generate_preparation_only: bool,
+    generate_ending_only: bool,
+) -> ReportScope:
+    normalized_scope = (report_scope or "").strip().lower()
+    if normalized_scope in ("full", "preparation", "ending"):
+        return normalized_scope  # type: ignore[return-value]
+
+    selected_count = int(bool(generate_full_report)) + int(bool(generate_preparation_only)) + int(bool(generate_ending_only))
+    if selected_count == 0:
+        return "full"
+    if selected_count > 1:
+        raise ValueError("Vyber pouze jeden režim generování.")
+    if generate_preparation_only:
+        return "preparation"
+    if generate_ending_only:
+        return "ending"
+    return "full"
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(os.path.join(WEB_DIR, "index.html"))
@@ -356,6 +392,10 @@ async def generate_report(
     topic: str = Form(...),
     username: str = Form(""),
     is_handwritten: bool = Form(False),
+    report_scope: str = Form("full"),
+    generate_full_report: bool = Form(False),
+    generate_preparation_only: bool = Form(False),
+    generate_ending_only: bool = Form(False),
     model_name: str = Form("gemini-2.5-flash"),
     api_key: str = Form(...),
     assignment_files: Optional[List[UploadFile]] = File(None),
@@ -370,6 +410,16 @@ async def generate_report(
     resolved_api_key = (api_key or "").strip()
     if not resolved_api_key:
         return JSONResponse(status_code=400, content={"error": "Chybí API klíč."})
+
+    try:
+        resolved_report_scope = _resolve_report_scope(
+            report_scope=report_scope,
+            generate_full_report=generate_full_report,
+            generate_preparation_only=generate_preparation_only,
+            generate_ending_only=generate_ending_only,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
 
     image_counter = 1
 
@@ -399,10 +449,6 @@ async def generate_report(
     if not waveforms_images and fallback_waveforms_images:
         waveforms_images = fallback_waveforms_images
         waveforms_assets.extend(fallback_waveforms_assets)
-        waveforms_text += "\n" + "\n".join(
-            f"[Fallback obrázek průběhu {asset.image_id}: {asset.filename}]"
-            for asset in fallback_waveforms_assets
-        )
 
     (
         data_images,
@@ -463,6 +509,7 @@ async def generate_report(
         "data_image_ids": [asset.image_id for asset in data_assets],
         "waveforms_images": waveforms_images,
         "waveforms_image_ids": [asset.image_id for asset in waveforms_assets],
+    "report_scope": resolved_report_scope,
         "username": username,
         "topic": topic,
         "image_catalog_text": image_catalog_text,
@@ -494,6 +541,7 @@ async def generate_report(
             topic=topic,
             inputs_map=inputs_map,
             is_handwritten=is_handwritten,
+            report_scope=resolved_report_scope,
         )
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Generování selhalo: {str(e)}"})

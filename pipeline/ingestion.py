@@ -737,6 +737,7 @@ class IngestionPipeline:
                 saved_figures.append(
                     {
                         "figure_id": figure_id,
+                        "source_file": source.filename,
                         "page": None,
                         "path": str(save_path),
                     }

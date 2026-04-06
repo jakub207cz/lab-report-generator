@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal
 
 import google.generativeai as genai
 from pydantic import BaseModel, Field
@@ -31,13 +31,26 @@ def _extract_json_object(raw_text: str) -> str:
 class _TheoryProcedureData(BaseModel):
     teorie: str = Field(default="")
     postup: str = Field(default="")
-    priklad_vypoctu: str = Field(default="")
     image_references: List[str] = Field(default_factory=list)
 
 
 class _ConclusionData(BaseModel):
     zaver: str = Field(default="")
     image_references: List[str] = Field(default_factory=list)
+
+
+class _CalculationItem(BaseModel):
+    title: str = Field(default="")
+    general_formula_latex: str = Field(default="")
+    substitution_formula_latex: str = Field(default="")
+    compute_expression: str = Field(default="")
+    result_symbol_latex: str = Field(default="x")
+    result_unit_latex: str = Field(default="")
+    variables: Dict[str, float] = Field(default_factory=dict)
+
+
+class _CalculationData(BaseModel):
+    items: List[_CalculationItem] = Field(default_factory=list)
 
 
 def _generate_structured_part(model: genai.GenerativeModel, prompt: str, schema_model: type[BaseModel]) -> BaseModel:
@@ -75,7 +88,7 @@ Tvým úkolem je napsat část školního laboratorního protokolu (elaborátu).
 
 Téma: {topic}
 
-V tomto volání generuj POUZE sekce: TEORIE, POSTUP MĚŘENÍ a PŘÍKLAD VÝPOČTU.
+V tomto volání generuj POUZE sekce: TEORIE a POSTUP MĚŘENÍ.
 
 DŮLEŽITÉ PRAVIDLO PRO CHYBĚJÍCÍ ZDROJE (TEORIE / POSTUP):
 Pokud u sekce Teorie nebo Postup zjistíš, že nebyly poskytnuty ŽÁDNÉ podklady (žádný text ani relevantní nápověda), sekci samostatně vygeneruj podle nejlepších znalostí k danému tématu. Na úplný začátek takto dovygenerované sekce však MUSÍŠ přidat přesně tuto větu velkými písmeny:
@@ -99,9 +112,6 @@ POSTUPUJ PODLE TĚCHTO SEKCÍ:
    - Styl musí být osobní: např. "připojil jsem", "nastavil jsem", "změřil jsem", "vypočítal jsem".
    - Zdrojový text postupu:
    {inputs_map.get('procedure_text', '')}
-
-3. PŘÍKLAD VÝPOČTU
-   - Na základě naměřených dat ({inputs_map.get('data_text', '')}) a teorie vytvoř více než jeden příklad výpočtu.
 
 DALŠÍ VSTUPY:
 --- ZADÁNÍ ---
@@ -169,63 +179,147 @@ Vrať POUZE validní JSON dle tohoto schema:
 """
 
 
+def _build_measurement_tables_context(inputs_map: Dict[str, Any], max_tables: int = 3, max_rows: int = 6) -> str:
+    tables = inputs_map.get("data_tables", []) or []
+    if not isinstance(tables, list) or not tables:
+        return "[]"
+
+    compact_tables: List[Dict[str, Any]] = []
+    for table in tables[:max_tables]:
+        if not isinstance(table, dict):
+            continue
+        headers = [str(h) for h in (table.get("headers") or [])]
+        raw_rows = table.get("rows") or []
+        rows = [[str(c) for c in row] for row in raw_rows[:max_rows] if isinstance(row, list)]
+        compact_tables.append(
+            {
+                "source_file": str(table.get("source_file") or ""),
+                "sheet_name": str(table.get("sheet_name") or ""),
+                "headers": headers,
+                "rows": rows,
+            }
+        )
+
+    return json.dumps(compact_tables, ensure_ascii=False)
+
+
+def _build_calculation_prompt(topic: str, inputs_map: Dict[str, Any]) -> str:
+    tables_context = _build_measurement_tables_context(inputs_map)
+
+    return f"""
+Jsi student 3. ročníku SPŠE a připravuješ sekci Příklad výpočtů laboratorního protokolu.
+
+Téma: {topic}
+
+Tvůj výstup musí být STRUČNÝ a ve stylu:
+1) Název výpočtu
+2) Obecný vzorec
+3) Dosazení konkrétních hodnot z měření
+
+DŮLEŽITÉ:
+- Negeneruj dlouhé komentáře, poznámky, úvahy ani odstavce.
+- Nepiš markdown, nepiš text mimo JSON.
+- Vrať pouze data pro 3 až 4 reprezentativní výpočty.
+- Hodnoty pro dosazení ber z naměřených tabulek níže (pokud chybí, použij jen nezbytné konstanty).
+- Do `general_formula_latex` a `substitution_formula_latex` dej validní LaTeX výraz bez znaků $...$.
+- V LaTeXu nepoužívej `\\text{{...}}`; jednotky zapisuj jen jako symbol (např. `A/m`, `T`, `W/kg`) a pro výsledek je dej do `result_unit_latex`.
+- Čísla v dosazení piš kompaktně (max 3 desetinná místa, bez zbytečných nul, bez vědecké notace typu `1.2e-05`).
+- Do `compute_expression` dej čistý Python výraz, který vrátí číselný výsledek (používej jen +,-,*,/,**,závorky,sqrt).
+- V `variables` uveď všechny proměnné použité ve `compute_expression` jako čísla.
+
+Naměřené tabulky (zkrácený JSON):
+{tables_context}
+
+Další podklady:
+--- DATA TEXT ---
+{inputs_map.get('data_text', '')}
+
+--- ZADÁNÍ ---
+{inputs_map.get('assignment_text', '')}
+
+--- TEORIE ---
+{inputs_map.get('theory_text', '')}
+
+Vrať POUZE validní JSON dle schema:
+{json.dumps(_CalculationData.model_json_schema(), ensure_ascii=False)}
+"""
+
+
 def generate_lab_report(
     api_key: str,
     model_name: str,
     topic: str,
     inputs_map: Dict[str, Any],
     is_handwritten: bool = False,
+    report_scope: Literal["full", "preparation", "ending"] = "full",
 ) -> LabReportData:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(model_name)
 
-    theory_prompt = _build_theory_and_procedure_prompt(topic=topic, inputs_map=inputs_map, is_handwritten=is_handwritten)
-    theory_parts = [theory_prompt]
-    for img_list in inputs_map.get("images_lists", []):
-        theory_parts.extend(img_list)
+    theory_data = _TheoryProcedureData()
+    conclusion_data = _ConclusionData()
+    calculation_data = _CalculationData()
 
-    theory_data = _generate_structured_part(
-        model=model,
-        prompt="\n".join([str(part) for part in theory_parts if isinstance(part, str)]) if all(isinstance(part, str) for part in theory_parts) else theory_prompt,
-        schema_model=_TheoryProcedureData,
-    )
+    if report_scope in ("full", "preparation"):
+        theory_prompt = _build_theory_and_procedure_prompt(topic=topic, inputs_map=inputs_map, is_handwritten=is_handwritten)
+        theory_parts = [theory_prompt]
+        for img_list in inputs_map.get("images_lists", []):
+            theory_parts.extend(img_list)
 
-    conclusion_prompt = _build_conclusion_prompt(topic=topic, inputs_map=inputs_map, is_handwritten=is_handwritten)
-    conclusion_parts: List[Any] = [conclusion_prompt]
-    conclusion_parts.extend(inputs_map.get("data_images", []))
-    conclusion_parts.extend(inputs_map.get("waveforms_images", []))
-
-    # Pokud je seznam jen text, sloučíme ho. Jinak pošleme multimodálně (text + obrázky).
-    if all(isinstance(part, str) for part in conclusion_parts):
-        conclusion_data = _generate_structured_part(
+        theory_data = _generate_structured_part(
             model=model,
-            prompt="\n".join([str(part) for part in conclusion_parts]),
-            schema_model=_ConclusionData,
+            prompt="\n".join([str(part) for part in theory_parts if isinstance(part, str)]) if all(isinstance(part, str) for part in theory_parts) else theory_prompt,
+            schema_model=_TheoryProcedureData,
         )
-    else:
-        response = model.generate_content(conclusion_parts)
-        raw_json_text = _extract_json_object(response.text)
-        try:
-            parsed = json.loads(raw_json_text)
-            conclusion_data = _ConclusionData.model_validate(parsed)
-        except Exception:
-            repair_prompt = (
-                "Uprav následující text na VALIDNÍ JSON přesně dle schema. "
-                "Vrať pouze JSON bez komentářů a bez markdownu.\n\n"
-                f"SCHEMA:\n{json.dumps(_ConclusionData.model_json_schema(), ensure_ascii=False)}\n\n"
-                f"TEXT:\n{response.text}"
-            )
-            repair_response = model.generate_content([repair_prompt])
-            repaired_json_text = _extract_json_object(repair_response.text)
-            parsed = json.loads(repaired_json_text)
-            conclusion_data = _ConclusionData.model_validate(parsed)
 
-    source_procedure = (inputs_map.get("procedure_text", "") or "").strip()
+    if report_scope in ("full", "ending"):
+        conclusion_prompt = _build_conclusion_prompt(topic=topic, inputs_map=inputs_map, is_handwritten=is_handwritten)
+        conclusion_parts: List[Any] = [conclusion_prompt]
+        conclusion_parts.extend(inputs_map.get("data_images", []))
+        conclusion_parts.extend(inputs_map.get("waveforms_images", []))
+
+        # Pokud je seznam jen text, sloučíme ho. Jinak pošleme multimodálně (text + obrázky).
+        if all(isinstance(part, str) for part in conclusion_parts):
+            conclusion_data = _generate_structured_part(
+                model=model,
+                prompt="\n".join([str(part) for part in conclusion_parts]),
+                schema_model=_ConclusionData,
+            )
+        else:
+            response = model.generate_content(conclusion_parts)
+            raw_json_text = _extract_json_object(response.text)
+            try:
+                parsed = json.loads(raw_json_text)
+                conclusion_data = _ConclusionData.model_validate(parsed)
+            except Exception:
+                repair_prompt = (
+                    "Uprav následující text na VALIDNÍ JSON přesně dle schema. "
+                    "Vrať pouze JSON bez komentářů a bez markdownu.\n\n"
+                    f"SCHEMA:\n{json.dumps(_ConclusionData.model_json_schema(), ensure_ascii=False)}\n\n"
+                    f"TEXT:\n{response.text}"
+                )
+                repair_response = model.generate_content([repair_prompt])
+                repaired_json_text = _extract_json_object(repair_response.text)
+                parsed = json.loads(repaired_json_text)
+                conclusion_data = _ConclusionData.model_validate(parsed)
+
+    if report_scope == "full":
+        calculation_prompt = _build_calculation_prompt(topic=topic, inputs_map=inputs_map)
+        try:
+            calculation_data = _generate_structured_part(
+                model=model,
+                prompt=calculation_prompt,
+                schema_model=_CalculationData,
+            )
+        except Exception:
+            calculation_data = _CalculationData()
+
+    source_procedure = (inputs_map.get("procedure_text", "") or "").strip() if report_scope in ("full", "preparation") else ""
 
     report = LabReportData(
         teorie=theory_data.teorie,
         postup=theory_data.postup,
-        priklad_vypoctu=theory_data.priklad_vypoctu,
+        priklad_vypoctu=json.dumps(calculation_data.model_dump(), ensure_ascii=False) if report_scope == "full" else "",
         zaver=conclusion_data.zaver,
         image_references=list(dict.fromkeys((theory_data.image_references or []) + (conclusion_data.image_references or []))),
     )

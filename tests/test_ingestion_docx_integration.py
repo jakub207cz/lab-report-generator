@@ -102,9 +102,9 @@ def test_xlsx_ingestion_to_docx_preview_output() -> None:
     generated_doc = Document(io.BytesIO(generated_bytes))
     paragraph_texts = _paragraph_texts(generated_doc)
 
-    assert any("Detekované grafy z XLSX" in txt for txt in paragraph_texts)
-    assert any("Chartsheet" in txt or "Worksheet chart" in txt for txt in paragraph_texts)
-    assert any("skutečné tabulky" in txt for txt in paragraph_texts)
+    assert not any("Detekované grafy z XLSX" in txt for txt in paragraph_texts)
+    assert not any("Chartsheet" in txt or "Worksheet chart" in txt for txt in paragraph_texts)
+    assert not any("skutečné tabulky" in txt for txt in paragraph_texts)
     assert any("Příklad výpočtu test integrace" in txt for txt in paragraph_texts)
     assert len(generated_doc.tables) >= 1 + len(data_tables)
 

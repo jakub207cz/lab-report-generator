@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import io
+import importlib
+import ast
+import json
+import math
 import os
 import re
 import textwrap
@@ -8,7 +12,7 @@ from typing import Any, Dict, List
 
 import streamlit as st
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK, WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
@@ -17,6 +21,14 @@ from pipeline.schemas import ImageAsset, LabReportData
 
 
 MAX_TABLE_COLUMNS_PER_BLOCK = 8
+
+_SUPPRESSED_TEXT_LINE_PATTERNS = [
+    re.compile(r"^\s*Detekované\s+grafy\s+z\s+XLSX\s*:\s*$", flags=re.IGNORECASE),
+    re.compile(r"^\s*-\s*FIG-\d+\s*:\s*.*$", flags=re.IGNORECASE),
+    re.compile(r"^\s*Tabulky\s+z\s+XLSX\s+byly\s+vloženy\s+níže\s+jako\s+skutečné\s+tabulky\.?\s*$", flags=re.IGNORECASE),
+]
+
+_PLOTTER = None
 
 
 def _find_row_by_prefix(table, prefix: str, col_idx: int = 0) -> int:
@@ -214,6 +226,248 @@ def _set_document_header_student(doc: Document, username: str) -> None:
         _append_page_number_field(paragraph)
 
 
+def _sanitize_section_text(text: str) -> str:
+    if not text:
+        return ""
+
+    filtered_lines: List[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if any(pattern.match(stripped) for pattern in _SUPPRESSED_TEXT_LINE_PATTERNS):
+            continue
+        filtered_lines.append(line.rstrip())
+
+    sanitized = "\n".join(filtered_lines)
+    sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
+    return sanitized.strip()
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    raw = str(value).strip().replace(" ", "")
+    if not raw:
+        return None
+    if re.fullmatch(r"[+-]?\d+(?:[\.,]\d+)?(?:[eE][+-]?\d+)?", raw):
+        try:
+            return float(raw.replace(",", "."))
+        except Exception:
+            return None
+    return None
+
+
+def _fmt_num(value: float, max_decimals: int = 6) -> str:
+    rendered = f"{value:.{max_decimals}f}".rstrip("0").rstrip(".")
+    if rendered in {"", "-0"}:
+        return "0"
+    return rendered
+
+
+def _compact_numeric_literals(text: str, max_decimals: int = 3) -> str:
+    if not text:
+        return ""
+
+    number_pattern = re.compile(r"(?<![A-Za-z_])([+-]?\d+(?:[\.,]\d+)?(?:[eE][+-]?\d+)?)(?![A-Za-z_])")
+
+    def _replace(match: re.Match[str]) -> str:
+        raw = match.group(1)
+        normalized = raw.replace(",", ".")
+        try:
+            num = float(normalized)
+        except Exception:
+            return raw
+        return _fmt_num(num, max_decimals=max_decimals)
+
+    return number_pattern.sub(_replace, text)
+
+
+def _normalize_result_unit_latex(unit: str) -> str:
+    normalized = (unit or "").strip()
+    if not normalized:
+        return ""
+
+    normalized = re.sub(r"\\text\{([^}]*)\}", r"\1", normalized)
+    normalized = re.sub(r"\\mathrm\{([^}]*)\}", r"\1", normalized)
+    normalized = normalized.replace("\\", "")
+    return normalized.strip()
+
+
+def _normalize_latex_line(line: str) -> str:
+    normalized = (line or "").strip()
+    if not normalized:
+        return ""
+
+    # LLM často vrací escapovaný LaTeX z JSON (\\frac); pro renderer potřebujeme \frac.
+    normalized = normalized.replace("\\\\", "\\")
+
+    # Typicky nevalidní / nekompaktní konstrukce z LLM.
+    normalized = re.sub(r"\\mathrm\{\\text\{([^}]*)\}\}", r"\\mathrm{\1}", normalized)
+    normalized = re.sub(r"\\text\{([^}]*)\}", r"\1", normalized)
+    normalized = _compact_numeric_literals(normalized, max_decimals=3)
+    return normalized
+
+
+_ALLOWED_MATH_FUNCS = {
+    "sqrt": math.sqrt,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "log": math.log,
+    "exp": math.exp,
+    "abs": abs,
+}
+
+_ALLOWED_MATH_CONSTS = {
+    "pi": math.pi,
+    "e": math.e,
+}
+
+
+def _safe_eval_expression(expression: str, variables: Dict[str, float]) -> float | None:
+    expr = (expression or "").strip().replace("^", "**")
+    if not expr:
+        return None
+
+    try:
+        parsed = ast.parse(expr, mode="eval")
+    except Exception:
+        return None
+
+    allowed_nodes = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Constant,
+        ast.Name,
+        ast.Load,
+        ast.Call,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Pow,
+        ast.Mod,
+        ast.USub,
+        ast.UAdd,
+    )
+
+    for node in ast.walk(parsed):
+        if not isinstance(node, allowed_nodes):
+            return None
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name):
+                return None
+            if node.func.id not in _ALLOWED_MATH_FUNCS:
+                return None
+        if isinstance(node, ast.Name):
+            if node.id not in variables and node.id not in _ALLOWED_MATH_FUNCS and node.id not in _ALLOWED_MATH_CONSTS:
+                return None
+
+    safe_names: Dict[str, Any] = {}
+    safe_names.update(_ALLOWED_MATH_FUNCS)
+    safe_names.update(_ALLOWED_MATH_CONSTS)
+    safe_names.update(variables)
+
+    try:
+        result = eval(compile(parsed, "<calc_expr>", "eval"), {"__builtins__": {}}, safe_names)
+        return float(result)
+    except Exception:
+        return None
+
+
+def _render_equation_image(latex: str) -> io.BytesIO | None:
+    global _PLOTTER
+
+    if _PLOTTER is None:
+        try:
+            matplotlib = importlib.import_module("matplotlib")
+            matplotlib.use("Agg")
+            _PLOTTER = importlib.import_module("matplotlib.pyplot")
+        except Exception:
+            _PLOTTER = False
+
+    if _PLOTTER is False:
+        return None
+
+    plt = _PLOTTER
+    fig = plt.figure(figsize=(8, 1.25), dpi=220)
+    try:
+        fig.patch.set_alpha(0)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.axis("off")
+        ax.text(0.02, 0.5, f"${latex}$", fontsize=20, va="center", ha="left")
+
+        bio = io.BytesIO()
+        fig.savefig(bio, format="png", transparent=True, bbox_inches="tight", pad_inches=0.05)
+        bio.seek(0)
+        return bio
+    except Exception:
+        return None
+    finally:
+        plt.close(fig)
+
+
+def _build_calculation_equations(calculation_payload_text: str) -> List[Dict[str, str]]:
+    if not calculation_payload_text:
+        return []
+
+    try:
+        payload = json.loads(calculation_payload_text)
+    except Exception:
+        return []
+
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return []
+
+    equations: List[Dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        title = str(item.get("title") or "").strip()
+        general = _normalize_latex_line(str(item.get("general_formula_latex") or ""))
+        substitution = _normalize_latex_line(str(item.get("substitution_formula_latex") or ""))
+        expression = str(item.get("compute_expression") or "").strip()
+        result_symbol = str(item.get("result_symbol_latex") or "x").strip()
+        result_unit = _normalize_result_unit_latex(str(item.get("result_unit_latex") or ""))
+        raw_variables = item.get("variables") if isinstance(item.get("variables"), dict) else {}
+
+        if not (title and general and substitution and expression):
+            continue
+
+        variables: Dict[str, float] = {}
+        for key, value in raw_variables.items():
+            key_norm = str(key or "").strip()
+            if not key_norm:
+                continue
+            as_float = _safe_float(value)
+            if as_float is None:
+                continue
+            variables[key_norm] = as_float
+
+        result_value = _safe_eval_expression(expression, variables)
+        if result_value is None:
+            continue
+
+        result_line = f"{result_symbol} = {_fmt_num(result_value, max_decimals=3)}"
+        if result_unit:
+            result_line += rf"\,\mathrm{{{result_unit}}}"
+
+        equations.append(
+            {
+                "title": title,
+                "general": general,
+                "substitution": substitution,
+                "result": result_line,
+            }
+        )
+
+    return equations
+
+
 def fill_template_docx(
     template_path: str,
     inputs_map: dict,
@@ -231,26 +485,54 @@ def fill_template_docx(
     resolved_username = (username or str(inputs_map.get("username", ""))).strip()
     resolved_topic = (topic or str(inputs_map.get("topic", ""))).strip()
     resolved_assignment = str(inputs_map.get("assignment_text", "")).strip()
+    report_scope = str(inputs_map.get("report_scope", "full") or "full").strip().lower()
 
     sheet_count = _estimate_sheet_count(inputs_map, ai_content)
     _set_cover_page_fields(doc, resolved_topic, resolved_username, resolved_assignment, sheet_count)
     _set_document_header_student(doc, resolved_username)
 
+    is_preparation = report_scope == "preparation"
+    is_ending = report_scope == "ending"
+
     sections_map = {
-        "Teoretický úvod": {"text": ai_content.teorie, "images": [], "image_ids": []},
-        "Schéma zapojení": {"text": "", "images": inputs_map.get("schema_images", []), "image_ids": inputs_map.get("schema_image_ids", [])},
-        "Postup měření": {"text": ai_content.postup, "images": [], "image_ids": []},
-        "Naměřené a vypočítané hodnoty": {
-            "text": str(inputs_map.get("data_text", "")),
-            "images": inputs_map.get("data_images", []),
-            "image_ids": inputs_map.get("data_image_ids", []),
-            "tables": inputs_map.get("data_tables", []),
+        "Teoretický úvod": {"text": ai_content.teorie if not is_ending else "", "images": [], "image_ids": []},
+        "Schéma zapojení": {
+            "text": "",
+            "images": inputs_map.get("schema_images", []) if not is_ending else [],
+            "image_ids": inputs_map.get("schema_image_ids", []) if not is_ending else [],
         },
-        "Příklad výpočtu": {"text": ai_content.priklad_vypoctu, "images": [], "image_ids": []},
-        "Příklad výpočtů": {"text": ai_content.priklad_vypoctu, "images": [], "image_ids": []},
-        "Soupis použitých přístrojů": {"text": str(inputs_map.get("instruments_text", "")), "images": [], "image_ids": []},
-        "Grafy": {"text": str(inputs_map.get("waveforms_text", "")), "images": inputs_map.get("waveforms_images", []), "image_ids": inputs_map.get("waveforms_image_ids", [])},
-        "Závěr": {"text": ai_content.zaver, "images": [], "image_ids": []},
+        "Postup měření": {"text": ai_content.postup if not is_ending else "", "images": [], "image_ids": []},
+        "Naměřené a vypočítané hodnoty": {
+            "text": str(inputs_map.get("data_text", "")) if not is_preparation else "",
+            "images": inputs_map.get("data_images", []) if not is_preparation else [],
+            "image_ids": inputs_map.get("data_image_ids", []) if not is_preparation else [],
+            "tables": inputs_map.get("data_tables", []) if not is_preparation else [],
+        },
+        "Příklad výpočtu": {
+            "text": ai_content.priklad_vypoctu if report_scope == "full" else "",
+            "images": [],
+            "image_ids": [],
+            "equation_mode": report_scope == "full",
+        },
+        "Příklad výpočtů": {
+            "text": ai_content.priklad_vypoctu if report_scope == "full" else "",
+            "images": [],
+            "image_ids": [],
+            "equation_mode": report_scope == "full",
+        },
+        "Soupis použitých přístrojů": {
+            "text": str(inputs_map.get("instruments_text", "")) if not is_preparation else "",
+            "images": [],
+            "image_ids": [],
+        },
+        "Grafy": {
+            "text": str(inputs_map.get("waveforms_text", "")) if not is_preparation else "",
+            "images": inputs_map.get("waveforms_images", []) if not is_preparation else [],
+            "image_ids": inputs_map.get("waveforms_image_ids", []) if not is_preparation else [],
+            "one_image_per_page": True,
+            "show_image_caption": False,
+        },
+        "Závěr": {"text": ai_content.zaver if not is_preparation else "", "images": [], "image_ids": []},
     }
 
     def _format_cell_value(value: Any, round_numeric: bool) -> str:
@@ -266,7 +548,11 @@ def fill_template_docx(
         if re.fullmatch(r"[+-]?\d+(?:[\.,]\d+)?(?:[eE][+-]?\d+)?", normalized):
             try:
                 number = float(normalized.replace(",", "."))
-                return f"{number:.3f}"
+                rounded = f"{number:.3f}"
+                compact = rounded.rstrip("0").rstrip(".")
+                if compact in {"", "-0"}:
+                    return "0"
+                return compact
             except Exception:
                 return text
         return text
@@ -299,9 +585,9 @@ def fill_template_docx(
         if col_count <= 0:
             return []
 
-        # Široké tabulky: rozdělit do více bloků, vždy zachovat 1. sloupec a čísla zaokrouhlit.
+        # Široké tabulky: rozdělit do více bloků, vždy zachovat 1. sloupec.
         needs_split = col_count > MAX_TABLE_COLUMNS_PER_BLOCK
-        round_numeric = needs_split
+        round_numeric = True
 
         headers = [_format_cell_value(h, round_numeric) for h in raw_headers]
         rows = [[_format_cell_value(cell, round_numeric) for cell in row] for row in raw_rows]
@@ -334,11 +620,27 @@ def fill_template_docx(
 
         return parts
 
-    def _add_content_after(paragraph, text: str, images: List, image_ids: List[str], tables: List[Dict[str, Any]] | None = None):
+    def _add_content_after(
+        paragraph,
+        text: str,
+        images: List,
+        image_ids: List[str],
+        tables: List[Dict[str, Any]] | None = None,
+        one_image_per_page: bool = False,
+        show_image_caption: bool = True,
+        equation_mode: bool = False,
+    ):
         parent = paragraph._element.getparent()
         index = parent.index(paragraph._element)
 
-        if text:
+        raw_text = text or ""
+        equation_blocks: List[Dict[str, str]] = []
+        if equation_mode:
+            equation_blocks = _build_calculation_equations(raw_text)
+
+        text = _sanitize_section_text(text)
+
+        if text and (not equation_mode or (equation_mode and not equation_blocks)):
             new_p = doc.add_paragraph()
             new_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
             run = new_p.add_run(text)
@@ -346,6 +648,40 @@ def fill_template_docx(
             run.font.size = Pt(12)
             parent.insert(index + 1, new_p._element)
             index += 1
+
+        if equation_mode:
+            if equation_blocks:
+                for block in equation_blocks:
+                    title_p = doc.add_paragraph(block["title"])
+                    title_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                    if title_p.runs:
+                        title_p.runs[0].bold = True
+                        title_p.runs[0].font.name = "Calibri"
+                        title_p.runs[0].font.size = Pt(12)
+                    parent.insert(index + 1, title_p._element)
+                    index += 1
+
+                    for line_key in ("general", "substitution", "result"):
+                        latex_line = block[line_key]
+                        eq_image = _render_equation_image(latex_line)
+                        if eq_image is not None:
+                            eq_p = doc.add_paragraph()
+                            eq_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            eq_run = eq_p.add_run()
+                            eq_run.add_picture(eq_image, width=Pt(360))
+                        else:
+                            eq_p = doc.add_paragraph(latex_line)
+                            eq_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            if eq_p.runs:
+                                eq_p.runs[0].font.name = "Cambria Math"
+                                eq_p.runs[0].font.size = Pt(12)
+
+                        parent.insert(index + 1, eq_p._element)
+                        index += 1
+
+                    spacer = doc.add_paragraph("")
+                    parent.insert(index + 1, spacer._element)
+                    index += 1
 
         for table_idx, table_payload in enumerate(tables or [], start=1):
             source_file = str(table_payload.get("source_file") or "").strip()
@@ -374,6 +710,12 @@ def fill_template_docx(
                 index += 1
 
         for i, img in enumerate(images):
+            if one_image_per_page and i > 0:
+                break_p = doc.add_paragraph()
+                break_p.add_run().add_break(WD_BREAK.PAGE)
+                parent.insert(index + 1, break_p._element)
+                index += 1
+
             img_stream = io.BytesIO()
             img.save(img_stream, format="PNG")
             img_stream.seek(0)
@@ -385,22 +727,32 @@ def fill_template_docx(
             parent.insert(index + 1, img_p._element)
             index += 1
 
-            image_id = image_ids[i] if i < len(image_ids) else "N/A"
-            image_meta = image_registry.get(image_id)
-            filename = image_meta.filename if image_meta else "neznámý soubor"
-            caption = doc.add_paragraph(f"Obrázek {image_id}: {filename}")
-            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            cap_run = caption.runs[0]
-            cap_run.font.name = "Calibri"
-            cap_run.font.size = Pt(10)
-            parent.insert(index + 1, caption._element)
-            index += 1
+            if show_image_caption:
+                image_id = image_ids[i] if i < len(image_ids) else "N/A"
+                image_meta = image_registry.get(image_id)
+                filename = image_meta.filename if image_meta else "neznámý soubor"
+                caption = doc.add_paragraph(f"Obrázek {image_id}: {filename}")
+                caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                cap_run = caption.runs[0]
+                cap_run.font.name = "Calibri"
+                cap_run.font.size = Pt(10)
+                parent.insert(index + 1, caption._element)
+                index += 1
 
     for para in list(doc.paragraphs):
         cleaned = para.text.strip()
         if cleaned in sections_map:
             sec = sections_map[cleaned]
-            _add_content_after(para, sec["text"], sec["images"], sec["image_ids"], sec.get("tables", []))
+            _add_content_after(
+                para,
+                sec["text"],
+                sec["images"],
+                sec["image_ids"],
+                sec.get("tables", []),
+                bool(sec.get("one_image_per_page", False)),
+                bool(sec.get("show_image_caption", True)),
+                bool(sec.get("equation_mode", False)),
+            )
 
     bio = io.BytesIO()
     doc.save(bio)
