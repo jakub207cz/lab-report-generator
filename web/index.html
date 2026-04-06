@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="cs">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Elaborát Generator</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Generátor laboratorního elaborátu</h1>
+      <p>Nahraj podklady, klikni na generovat a stáhni výsledný .docx.</p>
+
+      <form id="reportForm">
+        <label>Téma měření</label>
+        <input type="text" name="topic" required placeholder="Např. Měření na stabilizovaném zdroji" />
+
+        <label>Jméno uživatele</label>
+        <input type="text" name="username" placeholder="Např. Jan Novák" />
+
+        <label>API key</label>
+  <input type="password" name="api_key" required placeholder="AIza..." />
+
+        <label>Model</label>
+        <select name="model_name">
+          <option value="gemini-2.5-flash" selected>gemini-2.5-flash</option>
+          <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+        </select>
+
+        <label class="checkbox">
+          <input type="checkbox" name="is_handwritten" value="true" />
+          Ručně psaný elaborát (kratší výstup)
+        </label>
+
+        <h2>Podklady</h2>
+        <label>Zadání</label>
+  <small>Podporované formáty: .txt, .docx, .pdf</small>
+  <input type="file" name="assignment_files" multiple accept=".txt,.docx,.pdf" />
+
+        <label>Přístroje</label>
+  <small>Podporované formáty: .txt, .docx, .pdf, .xlsx</small>
+  <input type="file" name="instruments_files" multiple accept=".txt,.docx,.pdf,.xlsx" />
+
+        <label>Naměřená data</label>
+  <small>Podporované formáty: .xlsx</small>
+  <input type="file" name="data_files" multiple accept=".xlsx" />
+
+        <label>Teorie</label>
+  <small>Podporované formáty: .txt, .docx, .pdf</small>
+  <input type="file" name="theory_files" multiple accept=".txt,.docx,.pdf" />
+
+        <label>Grafické průběhy</label>
+  <small>Podporované formáty: .png, .jpg, .jpeg, .pdf</small>
+  <input type="file" name="waveforms_files" multiple accept=".png,.jpg,.jpeg,.pdf" />
+
+        <label>Závěr / osnova</label>
+  <small>Podporované formáty: .txt, .docx, .pdf</small>
+  <input type="file" name="conclusion_files" multiple accept=".txt,.docx,.pdf" />
+
+        <label>Schéma zapojení</label>
+  <small>Podporované formáty: .png, .jpg, .jpeg</small>
+  <input type="file" name="schema_files" multiple accept=".png,.jpg,.jpeg" />
+
+        <button type="submit" id="submitBtn">Vygenerovat elaborát</button>
+      </form>
+
+      <p id="status"></p>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,10 @@
+.env
+extracted_assets/
+tests/__pycache__/
+tests/output/
+__pycache__
+11_Feromag_mat IoT.pdf
+em-elab-11.xlsx
+NAVRH_LLM_ELABORATU.md
+.pytest_cache/
+.ipynb_checkpoints/

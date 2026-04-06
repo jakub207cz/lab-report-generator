@@ -4,6 +4,17 @@ python-docx
 pandas
 openpyxl
 pypdf
+pdfminer.six
 tabulate
 Pillow
 watchdog
+pydantic
+python-pptx
+pytesseract
+pypdfium2
+python-dotenv
+fastapi
+uvicorn
+python-multipart
+pytest
+httpx
