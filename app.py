@@ -233,8 +233,12 @@ class _ConclusionData(BaseModel):
 class _CalculationItem(BaseModel):
     title: str = Field(default=""); general_formula_latex: str = Field(default=""); substitution_formula_latex: str = Field(default=""); compute_expression: str = Field(default=""); result_symbol_latex: str = Field(default="x"); result_unit_latex: str = Field(default=""); variables: Dict[str, float] = Field(default_factory=dict)
 
-class _CalculationData(BaseModel):
-    items: List[_CalculationItem] = Field(default_factory=list)
+class _FullReportData(BaseModel):
+    teorie: str = Field(default="")
+    postup: str = Field(default="")
+    zaver: str = Field(default="")
+    calc_items: List[_CalculationItem] = Field(default_factory=list)
+    image_references: List[str] = Field(default_factory=list)
 
 def _generate_structured_part(model, prompt, schema_model) -> BaseModel:
     for attempt in range(3):
@@ -243,54 +247,48 @@ def _generate_structured_part(model, prompt, schema_model) -> BaseModel:
             raw = _extract_json_object(res.text)
             return schema_model.model_validate(json.loads(raw))
         except Exception as e:
-            if "429" in str(e) or "ResourceExhausted" in str(e):
-                if attempt < 2:
-                    st.warning(f"⚠️ Dosáhli jste limitu požadavků. Čekám 10 sekund... (pokus {attempt+1}/3)")
-                    time.sleep(10)
-                    continue
-                else:
-                    st.error("❌ Google API je přetížené nebo jste vyčerpali limit. Zkuste to za minutu znovu.")
-                    raise e
-            try:
-                repair = model.generate_content([f"Fix JSON for schema {json.dumps(schema_model.model_json_schema())}:\n{res.text}"])
-                return schema_model.model_validate(json.loads(_extract_json_object(repair.text)))
-            except:
-                if attempt == 2: raise e
-                time.sleep(2)
+            if attempt < 2 and ("429" in str(e) or "ResourceExhausted" in str(e)):
+                st.warning(f"⚠️ Google API je vytížené. Čekám 15 sekund... (pokus {attempt+1}/3)")
+                time.sleep(15)
+                continue
+            raise e
     return None
 
 def generate_lab_report_advanced(api_key, model_name, topic, inputs_map, is_handwritten=False) -> LabReportData:
     genai.configure(api_key=api_key)
     try:
         model = genai.GenerativeModel(model_name)
-        # Test call to verify model availability
         model.generate_content("test", generation_config={"max_output_tokens": 1})
     except:
-        st.info("⚠️ Vybraný model není dostupný, používám stabilní verzi gemini-1.5-flash.")
         model = genai.GenerativeModel("gemini-1.5-flash")
     
-    t_len = "ZKRÁCENÝ ROZSAH: Max půl strany A4!" if is_handwritten else "Max 1.5 strany A4."
-    c_len = "ZKRÁCENÝ ROZSAH: Max půl strany A4!" if is_handwritten else "Fakta a detailní analýza"
+    t_len = "půl strany A4" if is_handwritten else "1.5 strany A4"
+    c_len = "stručný" if is_handwritten else "detailní analýza"
     
-    t_prompt = f"Téma: {topic}\n\nTEORIE ({t_len})\nPodklady: {inputs_map.get('theory_text', '')}\nPOSTUP\nPodklady: {inputs_map.get('procedure_text', '')}\nSchema: {json.dumps(_TheoryProcedureData.model_json_schema())}"
-    c_prompt = f"Téma: {topic}\n\nZÁVĚR ({c_len})\nPodklady: {inputs_map.get('conclusion_text', '')}\nData: {inputs_map.get('data_text', '')}\nSchema: {json.dumps(_ConclusionData.model_json_schema())}"
-    cal_prompt = f"Téma: {topic}\n\nVytvoř 3-4 výpočty. Schema: {json.dumps(_CalculationData.model_json_schema())}"
+    # JEDEN SPOLEČNÝ PROMPT PRO VŠECHNO
+    full_prompt = f"""
+    Téma: {topic}
+    Tvým úkolem je vygenerovat KOMPLETNÍ laboratorní protokol najednou jako validní JSON.
+    
+    1. TEORIE: {t_len}. Podklady: {inputs_map.get('theory_text', '')}
+    2. POSTUP: v 1. os. mn. č. Podklady: {inputs_map.get('procedure_text', '')}
+    3. ZÁVĚR: {c_len}. Data: {inputs_map.get('data_text', '')}. Zadání: {inputs_map.get('conclusion_text', '')}
+    4. VÝPOČTY: Vytvoř 3-4 vzorové výpočty z dat.
+    
+    SCHEMA: {json.dumps(_FullReportData.model_json_schema())}
+    """
 
-    t_data = _generate_structured_part(model, t_prompt, _TheoryProcedureData)
-    time.sleep(2) # Delay to prevent rate limiting
-    c_data = _generate_structured_part(model, c_prompt, _ConclusionData)
-    time.sleep(2)
-    try: 
-        cal_data = _generate_structured_part(model, cal_prompt, _CalculationData)
-    except: 
-        cal_data = _CalculationData()
+    data = _generate_structured_part(model, full_prompt, _FullReportData)
+    
+    if not data:
+        return LabReportData(teorie="Chyba generování.", postup="Chyba.", zaver="Chyba.", priklad_vypoctu="{}", image_references=[])
 
     return LabReportData(
-        teorie=t_data.teorie if t_data else "Chyba generování.", 
-        postup=t_data.postup if t_data else "Chyba generování.", 
-        zaver=c_data.zaver if c_data else "Chyba generování.", 
-        priklad_vypoctu=json.dumps(cal_data.model_dump(), ensure_ascii=False) if cal_data else "{}", 
-        image_references=list(set((t_data.image_references if t_data else []) + (c_data.image_references if c_data else [])))
+        teorie=data.teorie,
+        postup=data.postup,
+        zaver=data.zaver,
+        priklad_vypoctu=json.dumps({"items": [i.model_dump() for i in data.calc_items]}, ensure_ascii=False),
+        image_references=data.image_references
     )
 
 # --- DOCX WRITER (from render/docx_writer.py) ---
