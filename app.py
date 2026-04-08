@@ -341,7 +341,13 @@ st.markdown("<p class='sub-title'>Tvoje záchrana pro laborky na SPŠE. Rychle a
 with st.expander("🔑 Nastavení & API", expanded=True):
     col1, col2 = st.columns(2)
     with col1: api_key = st.text_input("Google Gemini API Key", type="password")
-    with col2: model_choice = st.radio("Vyberte model AI:", ["gemini-1.5-flash", "gemini-1.5-pro"])
+    with col2:
+        model_options = {
+            "Gemini 2.5 Flash (Rychlý)": "gemini-2.5-flash",
+            "Gemini 3.1 Flash (Nejnovější)": "gemini-3.1-flash"
+        }
+        selected_model_label = st.radio("Vyberte model AI:", options=list(model_options.keys()), index=0)
+        model_choice = model_options[selected_model_label]
 
 with st.form("lab_report_form"):
     topic = st.text_input("Téma měření", placeholder="Např. Oživování a měření na stabilizovaném zdroji...")
