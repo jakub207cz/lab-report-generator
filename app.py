@@ -241,18 +241,26 @@ class _FullReportData(BaseModel):
     image_references: List[str] = Field(default_factory=list)
 
 def _generate_structured_part(model, prompt, schema_model) -> BaseModel:
-    for attempt in range(3):
+    wait_times = [15, 30, 45, 60, 90]
+    for attempt in range(len(wait_times)):
         try:
             res = model.generate_content([prompt])
+            if not res or not res.text:
+                 raise Exception("Prázdná odpověď od AI")
             raw = _extract_json_object(res.text)
             return schema_model.model_validate(json.loads(raw))
         except Exception as e:
-            if attempt < 2 and ("429" in str(e) or "ResourceExhausted" in str(e)):
-                st.warning(f"⚠️ Google API je vytížené. Čekám 15 sekund... (pokus {attempt+1}/3)")
-                time.sleep(15)
+            err_str = str(e)
+            if attempt < len(wait_times) - 1 and ("429" in err_str or "ResourceExhausted" in err_str or "quota" in err_str.lower()):
+                st.warning(f"⚠️ Google API je vytížené ({attempt+1}/{len(wait_times)}). Čekám {wait_times[attempt]} sekund...")
+                time.sleep(wait_times[attempt])
                 continue
             raise e
     return None
+
+def _limit_txt(txt, limit=30000):
+    if not txt: return ""
+    return txt[:limit] + ("... [text oříznut kvůli limitu]" if len(txt) > limit else "")
 
 def generate_lab_report_advanced(api_key, model_name, topic, inputs_map, is_handwritten=False) -> LabReportData:
     genai.configure(api_key=api_key)
@@ -271,9 +279,9 @@ def generate_lab_report_advanced(api_key, model_name, topic, inputs_map, is_hand
     Téma: {topic}
     Tvým úkolem je vygenerovat KOMPLETNÍ laboratorní protokol najednou jako validní JSON.
     
-    1. TEORIE: {t_len}. Podklady: {inputs_map.get('theory_text', '')}
-    2. POSTUP: v 1. os. mn. č. Podklady: {inputs_map.get('procedure_text', '')}
-    3. ZÁVĚR: {c_len}. Data: {inputs_map.get('data_text', '')}. Zadání: {inputs_map.get('conclusion_text', '')}
+    1. TEORIE: {t_len}. Podklady: {_limit_txt(inputs_map.get('theory_text', ''))}
+    2. POSTUP: v 1. os. mn. č. Podklady: {_limit_txt(inputs_map.get('procedure_text', ''))}
+    3. ZÁVĚR: {c_len}. Data: {_limit_txt(inputs_map.get('data_text', ''))}. Zadání: {_limit_txt(inputs_map.get('conclusion_text', ''))}
     4. VÝPOČTY: Vytvoř 3-4 vzorové výpočty z dat.
     
     SCHEMA: {json.dumps(_FullReportData.model_json_schema())}
