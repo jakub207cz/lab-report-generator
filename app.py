@@ -258,8 +258,9 @@ def generate_lab_report_advanced(api_key, model_name, topic, inputs_map, is_hand
     genai.configure(api_key=api_key)
     try:
         model = genai.GenerativeModel(model_name)
-        model.generate_content("test", generation_config={"max_output_tokens": 1})
-    except:
+        # Sice to nevoláme, ale kdyby model neexistoval, chyba se může vyhodit až při generování.
+        # Fallback na 1.5-flash je nejbezpečnější.
+    except Exception:
         model = genai.GenerativeModel("gemini-1.5-flash")
     
     t_len = "půl strany A4" if is_handwritten else "1.5 strany A4"
@@ -375,8 +376,8 @@ with st.expander("🔑 Nastavení & API", expanded=True):
     with col1: api_key = st.text_input("Google Gemini API Key", type="password")
     with col2:
         model_options = {
-            "Gemini 3 Flash (Nejnovější)": "gemini-3-flash",
-            "Gemini 2.5 Flash (Rychlý)": "gemini-2.5-flash"
+            "Gemini 1.5 Flash (Stabilní)": "gemini-1.5-flash",
+            "Gemini 2.0 Flash (Výkonný)": "gemini-2.0-flash"
         }
         selected_model_label = st.radio("Vyberte model AI:", options=list(model_options.keys()), index=0)
         model_choice = model_options[selected_model_label]
