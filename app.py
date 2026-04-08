@@ -375,8 +375,8 @@ with st.expander("🔑 Nastavení & API", expanded=True):
     with col1: api_key = st.text_input("Google Gemini API Key", type="password")
     with col2:
         model_options = {
-            "Gemini 2.5 Flash (Rychlý)": "gemini-2.5-flash",
-            "Gemini 3.1 Flash (Nejnovější)": "gemini-3.1-flash"
+            "Gemini 3 Flash (Nejnovější)": "gemini-3-flash",
+            "Gemini 2.5 Flash (Rychlý)": "gemini-2.5-flash"
         }
         selected_model_label = st.radio("Vyberte model AI:", options=list(model_options.keys()), index=0)
         model_choice = model_options[selected_model_label]
