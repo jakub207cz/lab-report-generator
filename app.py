@@ -1,429 +1,400 @@
+from __future__ import annotations
+
+import io
+import json
+import mimetypes
+import re
+import unicodedata
+import os
+import math
+import ast
+import textwrap
+import importlib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union, Literal
+
 import streamlit as st
 import google.generativeai as genai
+import pandas as pd
+import pypdf
+from PIL import Image, ImageDraw, ImageFont
 from docx import Document
 from docx.shared import Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-import json
-import io
-import os
-import pandas as pd
-from PIL import Image
-import pypdf
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK, WD_TAB_ALIGNMENT, WD_TAB_LEADER
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from pydantic import BaseModel, Field
 
-def set_document_formatting(doc):
-    style = doc.styles['Normal']
-    font = style.font
-    font.name = 'Calibri'
-    font.size = Pt(12)
-    
-    # Also set for parsed styles if needed, but Normal covers most
-    for style in doc.styles:
-        if hasattr(style, 'font'):
-            style.font.name = 'Calibri'
+# --- OPTIONAL DEPENDENCIES ---
+try:
+    from openpyxl import load_workbook
+    from openpyxl.utils.cell import get_column_letter, range_boundaries
+except Exception:
+    load_workbook = None; get_column_letter = None; range_boundaries = None
 
+try:
+    from pdfminer.high_level import extract_text as pdfminer_extract_text
+except Exception:
+    pdfminer_extract_text = None
 
-def extract_content_from_files(uploaded_files):
-    """
-    Extracts text and images from a LIST of uploaded files.
-    Returns: (text_content, list_of_images)
-    """
-    text_content = ""
-    images = []
-    
-    if not uploaded_files:
-        return text_content, images
-        
-    # Ensure list
-    if not isinstance(uploaded_files, list):
-        uploaded_files = [uploaded_files]
+try:
+    import pytesseract
+except Exception:
+    pytesseract = None
 
-    for uploaded_file in uploaded_files:
+try:
+    import pypdfium2 as pdfium
+except Exception:
+    pdfium = None
 
-        try:
-            if uploaded_file.type.startswith('image'):
-                image = Image.open(uploaded_file)
-                images.append(image)
-                text_content += f"\n[Obrázek: {uploaded_file.name}]\n"
-            
-            elif "spreadsheet" in uploaded_file.type or uploaded_file.name.endswith('.xlsx'):
-                df = pd.read_excel(uploaded_file)
-                text_content += f"\n--- {uploaded_file.name} ---\n" + df.to_markdown(index=False) + "\n"
-            
-            elif "wordprocessing" in uploaded_file.type or uploaded_file.name.endswith('.docx'):
-                doc_file = io.BytesIO(uploaded_file.getvalue())
-                doc = Document(doc_file)
-                full_text = []
-                for para in doc.paragraphs:
-                    full_text.append(para.text)
-                text_content += f"\n--- {uploaded_file.name} ---\n" + '\n'.join(full_text) + "\n"
+try:
+    from pptx import Presentation
+except Exception:
+    Presentation = None
 
-            elif "pdf" in uploaded_file.type or uploaded_file.name.endswith('.pdf'):
-                reader = pypdf.PdfReader(uploaded_file)
-                pdf_text = ""
-                for page in reader.pages:
-                    pdf_text += page.extract_text() + "\n"
-                text_content += f"\n--- {uploaded_file.name} ---\n" + pdf_text + "\n"
-            
-            elif uploaded_file.type == "text/plain" or uploaded_file.name.endswith('.txt') or uploaded_file.name.endswith('.csv'):
-                stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
-                text_content += f"\n--- {uploaded_file.name} ---\n" + stringio.read() + "\n"
+# --- MODELS / SCHEMAS (from pipeline/schemas.py) ---
+class ImageAsset(BaseModel):
+    image_id: str
+    filename: str
+    section: str
 
-        except Exception as e:
-            st.error(f"Chyba při zpracování souboru {uploaded_file.name}: {e}")
-        
-    return text_content, images
+class LabReportData(BaseModel):
+    teorie: str = Field(default="")
+    postup: str = Field(default="")
+    priklad_vypoctu: str = Field(default="")
+    zaver: str = Field(default="")
+    image_references: List[str] = Field(default_factory=list)
 
-def generate_lab_report(api_key, model_name, topic, inputs_map, is_handwritten=False):
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
+class QualityIssue(BaseModel):
+    severity: Literal["WARN", "FAIL"]
+    code: str
+    message: str
 
-    theory_length = "ZKRÁCENÝ ROZSAH: Maximálně půl strany A4! Piš velmi stručně a jen to nejdůležitější, protože to bude student přepisovat ručně." if is_handwritten else "Rozsah: cca 1.5 strany A4, min. 1000 slov"
-    conclusion_length = "ZKRÁCENÝ ROZSAH: Maximálně půl strany A4! Stručné zhodnocení." if is_handwritten else "Fakta a detailní analýza"
+class QualityGateResult(BaseModel):
+    status: Literal["PASS", "WARN", "FAIL"]
+    issues: List[QualityIssue] = Field(default_factory=list)
 
-    system_prompt = f"""
-    Jsi student 3. ročníku SPŠE (Střední průmyslová škola elektrotechnická). 
-    Tvým úkolem je napsat školní laboratorní protokol (elaborát).
-    
-    Téma: {topic}
+class DocumentChunk(BaseModel):
+    text: str
+    type: Literal["paragraph", "table", "figure", "heading"]
+    source_file: str
+    page: Optional[int] = None
+    section_hint: Optional[str] = None
+    confidence: float = 1.0
 
-    DŮLEŽITÉ PRAVIDLO PRO CHYBĚJÍCÍ ZDROJE:
-    Pokud u jakékoliv sekce (Teorie, Postup, Závěr) zjistíš, že nebyly poskytnuty ŽÁDNÉ podklady (žádný text ani relevantní nápověda), tvojí povinností je tuto sekci SAMOSTATNĚ VYGENEROVAT podle nejlepších znalostí k danému tématu. Na úplný začátek této dovygenerované sekce však MUSÍŠ přidat přesně tuto větu velkými písmeny:
-    "NEBYL PŘILOŽEN ZDROJ INFORMACÍ, AI TI TO VYGENEROVALA. ZKONTROLUJ SI TO!\\n\\n"
+class TableData(BaseModel):
+    headers: List[str]
+    rows: List[List[Any]]
+    units: Optional[List[str]] = None
+    source_file: str
+    page: Optional[int] = None
+    sheet_name: Optional[str] = None
+    section_hint: Optional[str] = None
 
-    POSTUPUJ PODLE TĚCHTO SEKCI:
+class FigureData(BaseModel):
+    figure_id: str
+    source_file: str
+    page: Optional[int] = None
+    slide: Optional[int] = None
+    section_hint: Optional[str] = None
+    ocr_text: Optional[str] = None
+    confidence: float = 1.0
 
-    1. TEORIE ({theory_length})
-       - Vycházej z přiloženého textu/osnovy:
-       {inputs_map.get('theory_text', '')}
-       - ODDĚLENĚ NAHRANÉ GRAFICKÉ PRŮBĚHY:
-       {inputs_map.get('waveforms_text', '')}
-       - Pokud není nic přiloženo, sekci kompletně vygeneruj a nezapomeň na povinnou větu: "NEBYL PŘILOŽEN ZDROJ INFORMACÍ...".
-       - Text musí být odborný a vyčerpávající. Vysvětli fyzikální principy, vzorce, odvození a souvislosti (při ručním psaní pouze to nezbytné).
-       - KRITICKY DŮLEŽITÉ: Učitelé velmi potrpí na grafické průběhy. Vyhodnoť odděleně nahrané obrázky grafických průběhů (případně ty v zadání) a v teoretickém úvodu je detailně textově popiš a zanalyzuj. Vysvětli, co znamenají.
+class NormalizedIngestionResult(BaseModel):
+    chunks: List[DocumentChunk] = Field(default_factory=list)
+    tables: List[TableData] = Field(default_factory=list)
+    figures: List[FigureData] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    2. POSTUP MĚŘENÍ
-       - PŘEPIŠ přiložený text pracovního postupu do 1. OSOBY MINULÉHO ČASU (např. změň "Změřte napětí" na "Změřil jsem napětí").
-       - Zdrojový text postupu:
-       {inputs_map.get('procedure_text', '')}
-       - Pokud není přiložen postup, logicky jej k tématu dovygeneruj a nezapomeň na povinnou větu: "NEBYL PŘILOŽEN ZDROJ INFORMACÍ...".
-       - Pokud jsou přiloženy obrázky, odkazuj se na ně textem (např. "jak je vidět na obrázku 1").
+# --- INGESTION PIPELINE (from pipeline/ingestion.py) ---
+UNIT_PATTERN = re.compile(r"(?:\(([^)]+)\)|\[([^\]]+)\])")
+ASSIGNMENT_SECTION_ALIASES: List[tuple[str, str, List[str]]] = [
+    ("assignment", "Zadání", ["zadani", "zadání"]),
+    ("theory", "Teoretický úvod", ["teoreticky uvod", "teorie"]),
+    ("schema", "Schéma zapojení", ["schema zapojeni", "schéma zapojení"]),
+    ("procedure", "Postup měření", ["postup mereni", "postup měření"]),
+    ("tables_example", "Příklad tabulek", ["priklad tabulek", "tabulky"]),
+    ("calculation_example", "Příklad výpočtů", ["priklad vypoctu", "vypocty"]),
+    ("conclusion", "Závěr", ["zaver", "závěr"]),
+]
 
-    3. PŘÍKLAD VÝPOČTU
-       - Na základě naměřených dat ({inputs_map.get('data_text', '')}) a teorie vytvoř VÍCE NEŽ JEDEN příklad výpočtu. Ideálně vytvoř JEDEN KONKRÉTNÍ PŘÍKLAD pro každý způsob / typ výpočtu použitý v dané úloze.
-       - U každého uveď vzorec, dosaď konkrétní naměřené hodnoty (např. U=10V, I=2A) a vypočítej výsledek. Výpočty musí být fyzikálně správné.
+@dataclass
+class BinarySource:
+    filename: str
+    data: bytes
+    section_hint: Optional[str] = None
+    mime_type: Optional[str] = None
 
-    4. ZÁVĚR ({conclusion_length})
-       - Vycházej z naměřených hodnot ({inputs_map.get('data_text', '')}) a přiložené osnovy:
-       {inputs_map.get('conclusion_text', '')}
-       - Pokud osnova závěru chybí (nebo chybí data), závěr dovygeneruj obecněji na základě tématu a teorie, a dej na začátek povinnou větu: "NEBYL PŘILOŽEN ZDROJ INFORMACÍ...".
-       - Zhodnoť měření technicky a kriticky. CITUJ KONKRÉTNÍ HODNOTY z naměřených dat (pokud vůbec nějaká jsou). Porovnej s teorií.
+class IngestionPipeline:
+    def __init__(self, enable_ocr: bool = True) -> None:
+        self.enable_ocr = enable_ocr
+        self._figure_counter = 1
 
-    DALŠÍ VSTUPY:
-    --- ZADÁNÍ ---
-    {inputs_map.get('assignment_text', '')}
-    
-    --- POUŽITÉ PŘÍSTROJE ---
-    {inputs_map.get('instruments_text', '')}
+    def ingest_sources(self, sources: Iterable[BinarySource]) -> NormalizedIngestionResult:
+        res = NormalizedIngestionResult(); meta = {}
+        for s in sources:
+            p = self._resolve_parser(Path(s.filename).suffix.lower())
+            if not p: continue
+            out = p(s)
+            res.chunks.extend(out.chunks); res.tables.extend(out.tables); res.figures.extend(out.figures)
+            for k, v in out.metadata.items():
+                if k not in meta: meta[k] = v
+                elif isinstance(meta[k], dict) and isinstance(v, dict): meta[k].update(v)
+                elif isinstance(meta[k], list) and isinstance(v, list): meta[k].extend(v)
+        res.metadata = {"source_count": len(list(sources)), "ocr_enabled": self.enable_ocr}
+        res.metadata.update(meta); return res
 
-    DŮLEŽITÉ: Rovnice piš jako prostý text (R=U/I). U všech desetinných čísel v textu používej výhradně desetinnou čárku, nikoliv tečku (např. 0,5 místo 0.5). Pro znak násobení ve výpočtech VŽDY používej tečku (.), nepoužívej hvězdičku (*).
-    
-    Vygeneruj výstup POUZE jako validní JSON s následující strukturou:
-    {{
-        "teorie": "...",
-        "postup": "...",
-        "priklad_vypoctu": "...",
-        "zaver": "..."
-    }}
-    """
-    
-    content_parts = [system_prompt]
-    
-    # Add all images found in inputs
-    for img_list in inputs_map.get('images_lists', []):
-        content_parts.extend(img_list)
+    def ingest_streamlit_files(self, files: Iterable[Any], hint: Optional[str] = None) -> NormalizedIngestionResult:
+        srcs = [BinarySource(f.name, f.getvalue(), hint, getattr(f, "type", None)) for f in (files or [])]
+        return self.ingest_sources(srcs)
 
-    try:
-        response = model.generate_content(content_parts)
-        text_response = response.text
-        if "```json" in text_response:
-            text_response = text_response.split("```json")[1].split("```")[0]
-        elif "```" in text_response:
-            text_response = text_response.split("```")[1].split("```")[0]
-        return json.loads(text_response)
-    except Exception as e:
-        st.error(f"Chyba při generování s AI: {e}")
+    def _resolve_parser(self, ext: str):
+        if ext == ".docx": return self.docx_parser
+        if ext in {".xlsx", ".xls"}: return self.xlsx_parser
+        if ext in {".txt", ".csv"}: return self.text_parser
+        if ext == ".pdf": return self.pdf_parser
+        if ext == ".pptx": return self.pptx_parser
+        if ext in {".png", ".jpg", ".jpeg"}: return self.image_handler
         return None
 
-def fill_template_docx(template_path, topic, inputs_map, ai_content):
-    if not os.path.exists(template_path):
-        st.error(f"Šablona {template_path} nenalezena!")
-        doc = Document()
-    else:
-        doc = Document(template_path)
+    def _next_figure_id(self) -> str:
+        fid = f"FIG-{self._figure_counter:03d}"; self._figure_counter += 1; return fid
 
-    # Map headers to content
-    sections_map = {
-        "Teoretický úvod": {"text": ai_content.get('teorie', ''), "images": inputs_map.get('waveforms_images', [])},
-        "Schéma zapojení": {"text": "", "images": inputs_map.get('schema_images', [])},
-        "Postup měření": {"text": ai_content.get('postup', ''), "images": []},
-        "Naměřené a vypočítané hodnoty": {"text": "", "images": inputs_map.get('data_images', [])},
-        "Příklad výpočtu": {"text": ai_content.get('priklad_vypoctu', ''), "images": []},
-        "Závěr": {"text": ai_content.get('zaver', ''), "images": []}
-    }
+    def _units_from_headers(self, headers: List[str]) -> List[str]:
+        return [(UNIT_PATTERN.search(h).group(1) or UNIT_PATTERN.search(h).group(2)).strip() if UNIT_PATTERN.search(h or "") else "" for h in headers]
+
+    def docx_parser(self, s: BinarySource) -> NormalizedIngestionResult:
+        doc, out = Document(io.BytesIO(s.data)), NormalizedIngestionResult()
+        for p in doc.paragraphs:
+            if p.text.strip(): out.chunks.append(DocumentChunk(text=p.text.strip(), type="heading" if "heading" in (p.style.name or "").lower() else "paragraph", source_file=s.filename, section_hint=s.section_hint))
+        for t in doc.tables:
+            rows = [[(c.text or "").strip() for c in r.cells] for r in t.rows]
+            if rows: out.tables.append(TableData(headers=rows[0], rows=rows[1:], source_file=s.filename, section_hint=s.section_hint))
+        return out
+
+    def text_parser(self, s: BinarySource) -> NormalizedIngestionResult:
+        out = NormalizedIngestionResult(); t = ""
+        for e in ("utf-8", "cp1250"):
+            try: t = s.data.decode(e).strip(); break
+            except: t = ""
+        if t:
+            out.chunks.append(DocumentChunk(text=t, type="paragraph", source_file=s.filename, section_hint=s.section_hint))
+            if s.filename.lower().endswith(".csv"):
+                try: df = pd.read_csv(io.BytesIO(s.data)); out.tables.append(TableData(headers=list(df.columns), rows=df.fillna("").values.tolist(), source_file=s.filename, section_hint=s.section_hint))
+                except: pass
+        return out
+
+    def xlsx_parser(self, s: BinarySource) -> NormalizedIngestionResult:
+        out = NormalizedIngestionResult()
+        if load_workbook:
+            try:
+                wb = load_workbook(io.BytesIO(s.data), data_only=True)
+                for ws in wb.worksheets:
+                    data = [[c.value for c in r] for r in ws.iter_rows()]
+                    if data and any(any(c is not None for c in r) for r in data):
+                        out.tables.append(TableData(headers=[str(v or "") for v in data[0]], rows=[[str(v or "") for v in r] for r in data[1:]], source_file=s.filename, sheet_name=ws.title, section_hint=s.section_hint))
+            except: pass
+        return out
+
+    def pdf_parser(self, s: BinarySource) -> NormalizedIngestionResult:
+        out = NormalizedIngestionResult()
+        try:
+            r = pypdf.PdfReader(io.BytesIO(s.data))
+            for i, p in enumerate(r.pages, 1):
+                t = (p.extract_text() or "").strip()
+                if t: out.chunks.append(DocumentChunk(text=t, type="paragraph", source_file=s.filename, page=i, section_hint=s.section_hint))
+        except: pass
+        return out
+
+    def image_handler(self, s: BinarySource) -> NormalizedIngestionResult:
+        out = NormalizedIngestionResult(); fid = self._next_figure_id()
+        out.figures.append(FigureData(figure_id=fid, source_file=s.filename, section_hint=s.section_hint))
+        return out
+
+# --- GENERATION (from pipeline/generation.py) ---
+def _strip_markdown_fences(raw_text: str) -> str:
+    text = raw_text.strip()
+    if "```json" in text: text = text.split("```json", 1)[1].split("```", 1)[0]
+    elif "```" in text: text = text.split("```", 1)[1].split("```", 1)[0]
+    return text.strip()
+
+def _extract_json_object(raw_text: str) -> str:
+    text = _strip_markdown_fences(raw_text); start, end = text.find("{"), text.rfind("}")
+    return text[start : end + 1] if start >= 0 and end > start else text
+
+class _TheoryProcedureData(BaseModel):
+    teorie: str = Field(default=""); postup: str = Field(default=""); image_references: List[str] = Field(default_factory=list)
+
+class _ConclusionData(BaseModel):
+    zaver: str = Field(default=""); image_references: List[str] = Field(default_factory=list)
+
+class _CalculationItem(BaseModel):
+    title: str = Field(default=""); general_formula_latex: str = Field(default=""); substitution_formula_latex: str = Field(default=""); compute_expression: str = Field(default=""); result_symbol_latex: str = Field(default="x"); result_unit_latex: str = Field(default=""); variables: Dict[str, float] = Field(default_factory=dict)
+
+class _CalculationData(BaseModel):
+    items: List[_CalculationItem] = Field(default_factory=list)
+
+def _generate_structured_part(model, prompt, schema_model) -> BaseModel:
+    res = model.generate_content([prompt]); raw = _extract_json_object(res.text)
+    try: return schema_model.model_validate(json.loads(raw))
+    except:
+        repair = model.generate_content([f"Uprav na VALIDNÍ JSON dle schema:\n{json.dumps(schema_model.model_json_schema())}\n\nTEXT:\n{res.text}"])
+        return schema_model.model_validate(json.loads(_extract_json_object(repair.text)))
+
+def generate_lab_report_advanced(api_key, model_name, topic, inputs_map, is_handwritten=False) -> LabReportData:
+    genai.configure(api_key=api_key); model = genai.GenerativeModel(model_name)
     
-    def add_content_after(paragraph, text, images):
-        parent = paragraph._element.getparent()
-        index = parent.index(paragraph._element)
-        
-        if text:
-            new_p = doc.add_paragraph()
-            new_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            runner = new_p.add_run(text)
-            runner.font.name = 'Calibri'
-            runner.font.size = Pt(12)
-            parent.insert(index + 1, new_p._element)
-            index += 1
+    t_len = "ZKRÁCENÝ ROZSAH: Max půl strany A4!" if is_handwritten else "Max 1.5 strany A4."
+    c_len = "ZKRÁCENÝ ROZSAH: Max půl strany A4!" if is_handwritten else "Fakta a detailní analýza"
+    
+    t_prompt = f"Téma: {topic}\n\nTEORIE ({t_len})\nPodklady: {inputs_map.get('theory_text', '')}\nPOSTUP\nPodklady: {inputs_map.get('procedure_text', '')}\nSchema: {json.dumps(_TheoryProcedureData.model_json_schema())}"
+    c_prompt = f"Téma: {topic}\n\nZÁVĚR ({c_len})\nPodklady: {inputs_map.get('conclusion_text', '')}\nData: {inputs_map.get('data_text', '')}\nSchema: {json.dumps(_ConclusionData.model_json_schema())}"
+    cal_prompt = f"Téma: {topic}\n\nVytvoř 3-4 výpočty. Schema: {json.dumps(_CalculationData.model_json_schema())}"
 
-        if images:
-            for img in images:
-                img_stream = io.BytesIO()
-                img.save(img_stream, format='PNG')
-                img_stream.seek(0)
-                
-                new_p = doc.add_paragraph()
-                new_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run = new_p.add_run()
-                # Resize to reasonable width (e.g. 400pt)
-                run.add_picture(img_stream, width=Pt(400))
-                
-                parent.insert(index + 1, new_p._element)
-                index += 1
+    t_data = _generate_structured_part(model, t_prompt, _TheoryProcedureData)
+    c_data = _generate_structured_part(model, c_prompt, _ConclusionData)
+    try: cal_data = _generate_structured_part(model, cal_prompt, _CalculationData)
+    except: cal_data = _CalculationData()
 
-    # Iterate copy of paragraphs
-    for para in list(doc.paragraphs):
-        cleaned = para.text.strip()
-        if cleaned in sections_map:
-            add_content_after(para, sections_map[cleaned]["text"], sections_map[cleaned]["images"])
-            
-    bio = io.BytesIO()
-    doc.save(bio)
-    return bio
+    return LabReportData(teorie=t_data.teorie, postup=t_data.postup, zaver=c_data.zaver, priklad_vypoctu=json.dumps(cal_data.model_dump(), ensure_ascii=False), image_references=list(set(t_data.image_references + c_data.image_references)))
 
+# --- DOCX WRITER (from render/docx_writer.py) ---
+def _render_eq(latex):
+    try:
+        import matplotlib.pyplot as plt
+        fig = plt.figure(figsize=(8, 1.25)); ax = fig.add_axes([0,0,1,1]); ax.axis("off")
+        ax.text(0.02, 0.5, f"${latex}$", fontsize=20, va="center", ha="left")
+        bio = io.BytesIO(); fig.savefig(bio, format="png", transparent=True, bbox_inches="tight"); plt.close(fig); bio.seek(0); return bio
+    except: return None
+
+def fill_template_docx_advanced(template_path, inputs_map, ai_content: LabReportData, topic=""):
+    doc = Document(template_path) if os.path.exists(template_path) else Document()
+    topic = (topic or str(inputs_map.get("topic", ""))).strip()
+    if doc.tables:
+        t = doc.tables[0]
+        # Vyhledání a doplnění názvu úlohy
+        for r in t.rows:
+            if "název úlohy" in (r.cells[0].text or "").lower():
+                r.cells[1].text = topic
+                for p in r.cells[1].paragraphs: p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    sec_map = {
+        "Teoretický úvod": {"text": ai_content.teorie, "imgs": inputs_map.get("waveforms_images", [])},
+        "Schéma zapojení": {"text": "", "imgs": inputs_map.get("schema_images", [])},
+        "Postup měření": {"text": ai_content.postup, "imgs": []},
+        "Naměřené a vypočítané hodnoty": {"text": "", "imgs": inputs_map.get("data_images", []), "tables": inputs_map.get("data_tables", [])},
+        "Příklad výpočtu": {"text": ai_content.priklad_vypoctu, "imgs": [], "is_calc": True},
+        "Závěr": {"text": ai_content.zaver, "imgs": []}
+    }
+
+    def add_c(para, data):
+        parent, idx = para._element.getparent(), para._element.getparent().index(para._element)
+        if data.get("text") and not data.get("is_calc"):
+            p = doc.add_paragraph(data["text"]); p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            parent.insert(idx + 1, p._element); idx += 1
+        if data.get("is_calc"):
+            try:
+                calc = json.loads(data["text"])
+                for item in calc.get("items", []):
+                    p = doc.add_paragraph(item["title"]); p.runs[0].bold = True; parent.insert(idx + 1, p._element); idx += 1
+                    for lat in [item["general_formula_latex"], item["substitution_formula_latex"]]:
+                        img = _render_eq(lat)
+                        p = doc.add_paragraph()
+                        if img: p.alignment = WD_ALIGN_PARAGRAPH.CENTER; p.add_run().add_picture(img, width=Pt(360))
+                        else: p.alignment = WD_ALIGN_PARAGRAPH.CENTER; p.add_run(lat)
+                        parent.insert(idx + 1, p._element); idx += 1
+            except: pass
+        for img in data.get("imgs", []):
+            try:
+                b = io.BytesIO(); img.save(b, "PNG"); b.seek(0)
+                p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER; p.add_run().add_picture(b, width=Pt(400)); parent.insert(idx + 1, p._element); idx += 1
+            except: pass
+        for tab in data.get("tables", []):
+            try:
+                t = doc.add_table(rows=len(tab["rows"])+1, cols=len(tab["headers"])); t.style = "Table Grid"
+                for i, h in enumerate(tab["headers"]): t.rows[0].cells[i].text = str(h)
+                for ri, r in enumerate(tab["rows"]):
+                    for ci, v in enumerate(r): t.rows[ri+1].cells[ci].text = str(v)
+                parent.insert(idx + 1, t._element); idx += 1
+            except: pass
+
+    for p in list(doc.paragraphs):
+        txt = p.text.strip()
+        if txt in sec_map: add_c(p, sec_map[txt])
+    
+    bio = io.BytesIO(); doc.save(bio); return bio
+
+# --- STREAMLIT UI ---
 st.set_page_config(page_title="AI Lab Report Generator", layout="wide", page_icon="⚡")
-
-# Moderní stylování pro lepší vzhled a přívětivost pro studenty
 st.markdown("""
 <style>
-    /* Odstranění marginů a paddingů pro mobilní responzivitu */
-    @media (max-width: 768px) {
-        .block-container {
-            padding-top: 1rem;
-            padding-bottom: 1rem;
-            padding-left: 1rem;
-            padding-right: 1rem;
-        }
-    }
-
-    /* Vylepšení nadpisů s responzivní velikostí písma (clamp) */
-    h1, h2, h3 {
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    }
-    
-    .main-title {
-        text-align: center;
-        font-size: clamp(2.5em, 6vw, 4em);
-        font-weight: 800;
-        background: -webkit-linear-gradient(45deg, #00f2fe, #4facfe, #00f2fe);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-size: 200% auto;
-        margin-bottom: 0.1em;
-        animation: shine 3s linear infinite;
-    }
-    
-    @keyframes shine {
-      to {
-        background-position: 200% center;
-      }
-    }
-
-    .sub-title {
-        text-align: center;
-        color: #a0aec0;
-        font-size: clamp(1em, 3vw, 1.2em);
-        margin-bottom: 2em;
-    }
-    
-    /* Vylepšené Tlačítko pro generování - moderní glassmorphism & gradients */
-    .stButton>button {
-        background: linear-gradient(90deg, #00f2fe 0%, #4facfe 100%);
-        color: #0e1117 !important;
-        border-radius: 12px;
-        border: none;
-        padding: 14px 24px;
-        font-weight: 800;
-        font-size: 1.15em;
-        transition: all 0.3s ease;
-        width: 100%;
-        box-shadow: 0 4px 15px rgba(0, 242, 254, 0.4);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-    .stButton>button:hover {
-        background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
-        color: #ffffff !important;
-        transform: translateY(-3px);
-        box-shadow: 0 8px 25px rgba(0, 242, 254, 0.6);
-    }
-    
-    /* Boxy pro nahrávání - jemnější okraje s hover efektem */
-    div[data-testid="stFileUploader"] {
-        background: rgba(30, 37, 48, 0.6);
-        padding: 15px;
-        border-radius: 12px;
-        box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.05), 0 4px 10px rgba(0,0,0,0.2);
-        border: 1px solid #2d3748;
-        transition: all 0.3s ease-in-out;
-        backdrop-filter: blur(10px);
-    }
-    div[data-testid="stFileUploader"]:hover {
-        border-color: #00f2fe;
-        box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.05), 0 4px 15px rgba(0, 242, 254, 0.15);
-    }
+    .main-title { text-align: center; font-size: clamp(2.5em, 6vw, 4em); font-weight: 800; background: linear-gradient(45deg, #00f2fe, #4facfe, #00f2fe); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .sub-title { text-align: center; color: #a0aec0; font-size: 1.2em; margin-bottom: 2em; }
+    .stButton>button { background: linear-gradient(90deg, #00f2fe, #4facfe); color: #0e1117 !important; border-radius: 12px; font-weight: 800; padding: 14px; width: 100%; }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("<h1 class='main-title'>⚡ AI Generátor Protokolů</h1>", unsafe_allow_html=True)
-st.markdown("<p class='sub-title'>Tvoje záchrana pro laborky na SPŠE. Rychle, moderně a bez stresu.</p>", unsafe_allow_html=True)
+st.markdown("<p class='sub-title'>Tvoje záchrana pro laborky na SPŠE. Rychle a bez stresu.</p>", unsafe_allow_html=True)
 
-with st.expander("🔑 Nastavení & API (Google Gemini)", expanded=True):
+with st.expander("🔑 Nastavení & API", expanded=True):
     col1, col2 = st.columns(2)
-    with col1:
-        api_key = st.text_input("Google Gemini API Key", type="password", help="Získejte svůj klíč zdarma na https://aistudio.google.com/")
-    with col2:
-        model_options = {
-            "Gemini 3 Flash (Preview)": "gemini-3-flash-preview",
-            "Gemini 2.5 Flash (Stable)": "gemini-2.5-flash"
-        }
-        selected_label = st.radio(
-            "Vyberte model AI:",
-            options=list(model_options.keys()),
-            index=1,
-            help="Zobrazeny jsou pouze modely, které aktuálně fungují spolehlivě."
-        )
-        model_choice = model_options[selected_label]
-
-    if not api_key:
-        st.warning("⚠️ Nezapomeň zadat svůj API klíč pro pokračování.")
+    with col1: api_key = st.text_input("Google Gemini API Key", type="password")
+    with col2: model_choice = st.radio("Vyberte model AI:", ["gemini-1.5-flash", "gemini-1.5-pro"])
 
 with st.form("lab_report_form"):
-    st.markdown("### 📌 Základní informace")
-    topic = st.text_input("Téma měření", placeholder="Např. Oživování a měření na stabilizovaném zdroji...", help="Téma, které se propíše do hlavičky protokolu.")
-    is_handwritten = st.toggle("📝 Píšu tenhle elaborát ručně! (Zkrátí teorii a závěr na max. půl A4)", value=False, help="Zapni, abys nedostal do generování kilometry textu a nemusel jsi ho celý ručně přepisovat. AI Tě ušetří.")
+    topic = st.text_input("Téma měření", placeholder="Např. Oživování a měření na stabilizovaném zdroji...")
+    is_handwritten = st.toggle("📝 Píšu tenhle elaborát ručně! (Zkrátit texty)")
     
-    st.markdown("---")
-    st.markdown("### 📂 Podklady pro AI (až 10 souborů na sekci!)")
-    st.markdown("Můžeš nahrát tabulky, pdf zadání ze školy, fotky z mobilu z měření, cokoliv máš.")
+    st.markdown("### 📂 Podklady pro AI")
+    asgn_f = st.file_uploader("Zadání úlohy", accept_multiple_files=True, key="asgn")
+    data_f = st.file_uploader("Tabulky naměřených hodnot", accept_multiple_files=True, key="data")
+    theo_f = st.file_uploader("Podklady k teorii", accept_multiple_files=True, key="theo")
+    wave_f = st.file_uploader("Grafické průběhy", accept_multiple_files=True, key="wave")
+    proc_f = st.file_uploader("Pracovní postup", accept_multiple_files=True, key="proc")
+    concl_f = st.file_uploader("Osnova pro závěr", accept_multiple_files=True, key="concl")
+    schm_f = st.file_uploader("Schéma zapojení (obrázky)", accept_multiple_files=True, key="schm")
     
-    assignment_file = st.file_uploader("Zadání úlohy", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="assignment", accept_multiple_files=True, help="Třeba fotka zadání (max 10 souborů)")
-    
-    instruments_file = st.file_uploader("Seznam použitých přístrojů", type=['txt', 'docx', 'pdf', 'xlsx', 'png', 'jpg', 'jpeg'], key="instruments", accept_multiple_files=True, help="Odkud AI vyčte přístroje (max 10 souborů)")
-    
-    data_files = st.file_uploader("Tabulky naměřených hodnot", type=['xlsx', 'csv', 'txt', 'pdf', 'png', 'jpg', 'jpeg'], key="data", accept_multiple_files=True, help="Hodně pomůže Excel nebo čitelná fotka hodnot (max 10 souborů)")
-
-    theory_file = st.file_uploader("Podklady k teorii", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="theory", accept_multiple_files=True, help="Třeba screenshoty skript nebo prezentace (max 10 souborů)")
-
-    waveforms_file = st.file_uploader("Grafické průběhy k teorii (Novinka!)", type=['png', 'jpg', 'jpeg', 'pdf'], key="waveforms", accept_multiple_files=True, help="Nahraj fotky nebo PDF průběhů. AI je rozpozná a řádně vysvětlí v teoretické části! (max 10 souborů)")
-
-    procedure_file = st.file_uploader("Pracovní postup", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="procedure", accept_multiple_files=True, help="Materiál, z kterého AI přepíše postup do min. času (max 10 souborů)")
-
-    conclusion_file = st.file_uploader("Osnova pro závěr", type=['txt', 'docx', 'pdf', 'png', 'jpg', 'jpeg'], key="conclusion", accept_multiple_files=True, help="Zadání toho, co musí být v závěru uvedeno (max 10 souborů)")
-
-    schema_files = st.file_uploader("Schéma zapojení pro protokol", type=['png', 'jpg', 'jpeg'], key="schema", accept_multiple_files=True, help="Obrázky, které se vloží do sekce Schéma zapojení (max 10 souborů)")
-
-    st.markdown("<br>", unsafe_allow_html=True)
     submitted = st.form_submit_button("🚀 Vygenerovat nadupaný protokol")
 
 if submitted:
-    # Kontrola maximálně 10 souborů na sekci
-    files_groups = [assignment_file, instruments_file, data_files, theory_file, procedure_file, conclusion_file, schema_files]
-    over_limit = any(f is not None and len(f) > 10 for f in files_groups if isinstance(f, list))
-    
-    if over_limit:
-        st.error("❌ Nahrál jsi pod jednu sekci víc než 10 souborů! AI to nezvládne zpracovat. Vrať se a limituj je na max 10.")
-    elif not api_key:
-        st.error("❌ Nejdřív doplň svůj Google Gemini API klíč!")
-    elif not topic:
-        st.error("❌ Musíš uvést Téma měření!")
+    if not api_key or not topic: st.error("❌ Doplň API klíč a téma!")
     else:
-        with st.spinner("Zpracovávám soubory a generuji protokol..."):
+        with st.spinner("Zpracovávám a generuji..."):
+            pipeline = IngestionPipeline()
+            asgn_r = pipeline.ingest_streamlit_files(asgn_f, "assignment")
+            data_r = pipeline.ingest_streamlit_files(data_f, "data")
+            theo_r = pipeline.ingest_streamlit_files(theo_f, "theory")
+            wave_r = pipeline.ingest_streamlit_files(wave_f, "waveforms")
+            proc_r = pipeline.ingest_streamlit_files(proc_f, "procedure")
+            concl_r = pipeline.ingest_streamlit_files(concl_f, "conclusion")
             
-            # Extract content from files
-            # Note: extract_content_from_files handles lists now
-            assignment_text, assignment_images = extract_content_from_files(assignment_file)
-            instruments_text, instruments_images = extract_content_from_files(instruments_file)
-            data_text, data_images = extract_content_from_files(data_files)
-            theory_text, theory_images = extract_content_from_files(theory_file)
-            waveforms_text, waveforms_images = extract_content_from_files(waveforms_file)
-            procedure_text, procedure_images = extract_content_from_files(procedure_file)
-            conclusion_text, conclusion_images = extract_content_from_files(conclusion_file)
-            
-            # Extract schema images specially
-            _, schema_images_list = extract_content_from_files(schema_files)
+            def get_txt(r): return "\n".join([c.text for c in r.chunks])
+            def get_imgs(files):
+                imgs = []
+                for f in (files or []):
+                    if f.type.startswith('image'): imgs.append(Image.open(f))
+                return imgs
 
-            # If no file uploaded, handle empty text
-            if not assignment_text and not assignment_images: assignment_text = ""
-            if not instruments_text and not instruments_images: instruments_text = ""
-            if not data_text and not data_images: data_text = ""
-
-            # Prepare Input Map for AI
-            inputs_map = {
-                'assignment_text': assignment_text,
-                'instruments_text': instruments_text,
-                'data_text': data_text,
-                'theory_text': theory_text,
-                'waveforms_text': waveforms_text,
-                'procedure_text': procedure_text,
-                'conclusion_text': conclusion_text,
-                'schema_images': schema_images_list,
-                'data_images': data_images,
-                'waveforms_images': waveforms_images,
-                'images_lists': [
-                    assignment_images, instruments_images, data_images, 
-                    theory_images, waveforms_images, procedure_images, conclusion_images
-                ]
+            inputs = {
+                'topic': topic,
+                'assignment_text': get_txt(asgn_r),
+                'data_text': get_txt(data_r),
+                'theory_text': get_txt(theo_r),
+                'procedure_text': get_txt(proc_r),
+                'conclusion_text': get_txt(concl_r),
+                'waveforms_images': get_imgs(wave_f),
+                'schema_images': get_imgs(schm_f),
+                'data_images': get_imgs(data_f),
+                'data_tables': [{"headers": t.headers, "rows": t.rows} for t in data_r.tables]
             }
-
-            # Generate Logic
-            ai_data = generate_lab_report(api_key, model_choice, topic, inputs_map, is_handwritten)
             
-            if ai_data:
-                st.balloons()
-                st.success("🎉 Úspěšně vygenerováno! Tady je tvůj základ záchrany.")
-                
-                # Preview
-                st.subheader("Náhled obsahu:")
-                with st.expander("Teorie", expanded=False):
-                    st.markdown(ai_data.get('teorie', ''))
-                with st.expander("Postup měření (náhled)", expanded=True):
-                    st.markdown(ai_data.get('postup', ''))
-                with st.expander("Příklad výpočtu", expanded=True):
-                    st.markdown(ai_data.get('priklad_vypoctu', ''))
-                with st.expander("Závěr", expanded=False):
-                    st.markdown(ai_data.get('zaver', ''))
-                
-                # Generate DOCX from TEMPLATE
-                template_path = "Graficka_Osnova.docx"
-                docx_file = fill_template_docx(
-                    template_path,
-                    topic, 
-                    inputs_map,
-                    ai_data
-                )
-                
-                st.download_button(
-                    label="📥 Stáhnout protokol (.docx)",
-                    data=docx_file.getvalue(),
-                    file_name="laboratorni_protokol.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
+            ai_data = generate_lab_report_advanced(api_key, model_choice, topic, inputs, is_handwritten)
+            
+            st.balloons(); st.success("🎉 Hotovo!")
+            with st.expander("Náhled", expanded=True):
+                st.markdown(f"**Teorie:**\n{ai_data.teorie[:500]}...")
+            
+            doc_file = fill_template_docx_advanced("Graficka_Osnova.docx", inputs, ai_data, topic)
+            st.download_button("📥 Stáhnout protokol (.docx)", doc_file.getvalue(), "laboratorni_protokol.docx")
