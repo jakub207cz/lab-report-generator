@@ -10,6 +10,7 @@ import math
 import ast
 import textwrap
 import importlib
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union, Literal
@@ -236,14 +237,37 @@ class _CalculationData(BaseModel):
     items: List[_CalculationItem] = Field(default_factory=list)
 
 def _generate_structured_part(model, prompt, schema_model) -> BaseModel:
-    res = model.generate_content([prompt]); raw = _extract_json_object(res.text)
-    try: return schema_model.model_validate(json.loads(raw))
-    except:
-        repair = model.generate_content([f"Uprav na VALIDNÍ JSON dle schema:\n{json.dumps(schema_model.model_json_schema())}\n\nTEXT:\n{res.text}"])
-        return schema_model.model_validate(json.loads(_extract_json_object(repair.text)))
+    for attempt in range(3):
+        try:
+            res = model.generate_content([prompt])
+            raw = _extract_json_object(res.text)
+            return schema_model.model_validate(json.loads(raw))
+        except Exception as e:
+            if "429" in str(e) or "ResourceExhausted" in str(e):
+                if attempt < 2:
+                    st.warning(f"⚠️ Dosáhli jste limitu požadavků. Čekám 10 sekund... (pokus {attempt+1}/3)")
+                    time.sleep(10)
+                    continue
+                else:
+                    st.error("❌ Google API je přetížené nebo jste vyčerpali limit. Zkuste to za minutu znovu.")
+                    raise e
+            try:
+                repair = model.generate_content([f"Fix JSON for schema {json.dumps(schema_model.model_json_schema())}:\n{res.text}"])
+                return schema_model.model_validate(json.loads(_extract_json_object(repair.text)))
+            except:
+                if attempt == 2: raise e
+                time.sleep(2)
+    return None
 
 def generate_lab_report_advanced(api_key, model_name, topic, inputs_map, is_handwritten=False) -> LabReportData:
-    genai.configure(api_key=api_key); model = genai.GenerativeModel(model_name)
+    genai.configure(api_key=api_key)
+    try:
+        model = genai.GenerativeModel(model_name)
+        # Test call to verify model availability
+        model.generate_content("test", generation_config={"max_output_tokens": 1})
+    except:
+        st.info("⚠️ Vybraný model není dostupný, používám stabilní verzi gemini-1.5-flash.")
+        model = genai.GenerativeModel("gemini-1.5-flash")
     
     t_len = "ZKRÁCENÝ ROZSAH: Max půl strany A4!" if is_handwritten else "Max 1.5 strany A4."
     c_len = "ZKRÁCENÝ ROZSAH: Max půl strany A4!" if is_handwritten else "Fakta a detailní analýza"
@@ -253,11 +277,21 @@ def generate_lab_report_advanced(api_key, model_name, topic, inputs_map, is_hand
     cal_prompt = f"Téma: {topic}\n\nVytvoř 3-4 výpočty. Schema: {json.dumps(_CalculationData.model_json_schema())}"
 
     t_data = _generate_structured_part(model, t_prompt, _TheoryProcedureData)
+    time.sleep(2) # Delay to prevent rate limiting
     c_data = _generate_structured_part(model, c_prompt, _ConclusionData)
-    try: cal_data = _generate_structured_part(model, cal_prompt, _CalculationData)
-    except: cal_data = _CalculationData()
+    time.sleep(2)
+    try: 
+        cal_data = _generate_structured_part(model, cal_prompt, _CalculationData)
+    except: 
+        cal_data = _CalculationData()
 
-    return LabReportData(teorie=t_data.teorie, postup=t_data.postup, zaver=c_data.zaver, priklad_vypoctu=json.dumps(cal_data.model_dump(), ensure_ascii=False), image_references=list(set(t_data.image_references + c_data.image_references)))
+    return LabReportData(
+        teorie=t_data.teorie if t_data else "Chyba generování.", 
+        postup=t_data.postup if t_data else "Chyba generování.", 
+        zaver=c_data.zaver if c_data else "Chyba generování.", 
+        priklad_vypoctu=json.dumps(cal_data.model_dump(), ensure_ascii=False) if cal_data else "{}", 
+        image_references=list(set((t_data.image_references if t_data else []) + (c_data.image_references if c_data else [])))
+    )
 
 # --- DOCX WRITER (from render/docx_writer.py) ---
 def _render_eq(latex):
